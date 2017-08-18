@@ -65,8 +65,10 @@ pub struct App {
     window: Window,
     vk_instance: Arc<Instance>,
     vk_debug_callback: Option<DebugCallback>,
-    //    validation_layers: Vec<& 'static str>,
-    //    device_extensions: Vec<DeviceExtensions>,
+    vk_surface: Arc<Surface>,
+//    vk_physical_device: PhysicalDevice,
+//    validation_layers: Vec<& 'static str>,
+//    device_extensions: Vec<DeviceExtensions>,
 }
 
 
@@ -74,7 +76,7 @@ impl App {
     pub fn new(width: u32, height: u32) -> Result<App, String> {
         let title = "Vulkan test";
         let (mut glfw, mut window) = App::init_window(width, height, title)?;
-        let (mut instance, debug_callback) = App::init_vulkan(&glfw, &window)?;
+        let (mut instance, debug_callback, mut surface) = App::init_vulkan(&glfw, &window)?;
 
         Ok(App {
             title: title,
@@ -84,8 +86,10 @@ impl App {
             window: window,
             vk_instance: instance,
             vk_debug_callback: debug_callback,
-            //            validation_layers: vec!["VK_LAYER_LUNARG_standard_validation"],
-            //            device_extensions: vec![DeviceExtensions.khr_swapchain],
+            vk_surface: surface,
+//            vk_physical_device: physical_device,
+//            validation_layers: vec!["VK_LAYER_LUNARG_standard_validation"],
+//            device_extensions: vec![DeviceExtensions.khr_swapchain],
         })
     }
 
@@ -110,11 +114,11 @@ impl App {
         }
     }
 
-    fn init_vulkan(glfw: &Glfw, window: &Window) -> Result<(Arc<Instance>, Option<DebugCallback>), String> {
+    fn init_vulkan(glfw: &Glfw, window: &Window) -> Result<(Arc<Instance>, Option<DebugCallback>, Arc<Surface>), String> {
         let mut vk_instance = App::create_instance(glfw)?;
         let debug_callback = App::setup_debug_callback(&vk_instance)?;
-        App::create_surface(&vk_instance, glfw, window)?;
-        let physical_device = App::pick_physical_device(&vk_instance)?;
+        let mut surface = App::create_surface(&vk_instance, glfw, window)?;
+        let mut physical_device = App::pick_physical_device(&vk_instance)?;
         App::create_logical_device()?;
         App::create_swap_chain()?;
         App::create_image_views()?;
@@ -125,7 +129,7 @@ impl App {
         App::create_command_buffers()?;
         App::create_semaphores()?;
 
-        Ok((vk_instance.clone(), debug_callback))
+        Ok((vk_instance.clone(), debug_callback, surface))
     }
 
     fn create_instance(glfw: &Glfw) -> Result<Arc<Instance>, String> {
@@ -157,35 +161,23 @@ impl App {
         Ok(Some(_callback))
     }
 
-    fn create_surface(vk_instance: &Arc<Instance>, glfw: &Glfw, window: &Window) -> Result<(), String> {
-//        let result = glfw::ffi::glfwCreateWindowSurface(vk_instance, window, ptr::null_mut(), surface);
-
+    fn create_surface(vk_instance: &Arc<Instance>, glfw: &Glfw, window: &Window) -> Result<Arc<Surface>, String> {
         use vulkano::VulkanObject;
 
         let surface: Arc<Surface> = unsafe {
             Arc::new(Surface::new( vk_instance.clone(), 0))
         };
 
-        let mut _surface: u64 = 0;
-
         let result = unsafe {
             glfw::ffi::glfwCreateWindowSurface(vk_instance.internal_object(), window.window_ptr(), ptr::null_mut(), &mut surface.internal_object())
         };
 
 
-
-//        let surface = unsafe {
-//            let hinstance: *const () = ptr::null();     // Windows-specific object
-//            Surface::from_hwnd(instance.clone(), hinstance, window).unwrap()
-//        };
-
-        if result != 0 {
-            // 0 is VK_SUCCESS
+        if result != 0 { // 0 is VK_SUCCESS
             return Err("Error creating window surface".to_string());
         }
 
-
-        Ok(())
+        Ok(surface)
     }
 
     fn pick_physical_device(vk_instance: &Arc<Instance>) -> Result<PhysicalDevice, String> {
