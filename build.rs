@@ -3,6 +3,8 @@
 use std::process::Command;
 use std::env;
 
+//TODO take a look at this: https://github.com/vulkano-rs/vulkano/tree/master/glsl-to-spirv
+
 fn main() {
     let out_dir = env::var("OUT_DIR").unwrap();
     let src_dir = "src/shaders";
@@ -17,7 +19,7 @@ fn main() {
             .arg(&format!("{}/{}", src_dir, shader))
             .arg("-o")
             .arg(&format!("{}/{}.spv", out_dir, shader))
-            .arg("--aml")
+            //.arg("--aml")
             .status().unwrap();
 
         println!("cargo:rerun-if-changed={}/{}", src_dir, shader);

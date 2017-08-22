@@ -12,15 +12,19 @@ use glfw::Context;
 use glfw::Window;
 
 use vulkano;
+use vulkano::buffer::BufferUsage;
+use vulkano::buffer::cpu_access::CpuAccessibleBuffer;
 use vulkano::descriptor::descriptor::ShaderStages;
 use vulkano::descriptor::descriptor::DescriptorDesc;
 use vulkano::descriptor::pipeline_layout::PipelineLayoutDesc;
+use vulkano::descriptor::pipeline_layout::PipelineLayoutAbstract;
 use vulkano::descriptor::pipeline_layout::PipelineLayoutDescPcRange;
 use vulkano::device::DeviceExtensions;
 use vulkano::device::Device;
 use vulkano::device::{Queue, QueuesIter};
 use vulkano::format;
 use vulkano::framebuffer::RenderPass;
+use vulkano::framebuffer::RenderPassAbstract;
 use vulkano::framebuffer::Subpass;
 use vulkano::image::SwapchainImage;
 use vulkano::instance::PhysicalDevice;
@@ -29,6 +33,7 @@ use vulkano::instance::InstanceExtensions;
 use vulkano::instance::PhysicalDeviceType;
 use vulkano::instance::debug::DebugCallback;
 use vulkano::pipeline::GraphicsPipeline;
+use vulkano::pipeline::GraphicsPipelineAbstract;
 use vulkano::pipeline::shader::ShaderModule;
 use vulkano::pipeline::shader::GraphicsShaderType;
 use vulkano::pipeline::shader::{ShaderInterfaceDef,ShaderInterfaceDefEntry};
@@ -98,6 +103,8 @@ pub struct App {
     vk_instance: Arc<Instance>,
     vk_debug_callback: Option<DebugCallback>,
     vk_surface: Arc<Surface>,
+    vk_pipeline: Arc<GraphicsPipelineAbstract>,
+    vertex_buffer: Arc<CpuAccessibleBuffer<[Vertex]>>
 //    vk_physical_device: PhysicalDevice,
 //    validation_layers: Vec<& 'static str>,
 //    device_extensions: Vec<DeviceExtensions>,
@@ -108,7 +115,7 @@ impl App {
     pub fn new(width: u32, height: u32) -> Result<App, String> {
         let title = "Vulkan test";
         let (mut glfw, mut window) = App::init_window(width, height, title)?;
-        let (mut instance, debug_callback, mut surface) = App::init_vulkan(&glfw, &window)?;
+        let (mut instance, debug_callback, mut surface, mut pipeline, mut vertex_buffer) = App::init_vulkan(&glfw, &window)?;
 
         Ok(App {
             title: title,
@@ -119,6 +126,8 @@ impl App {
             vk_instance: instance,
             vk_debug_callback: debug_callback,
             vk_surface: surface,
+            vk_pipeline: pipeline,
+            vertex_buffer: vertex_buffer,
 //            vk_physical_device: physical_device,
 //            validation_layers: vec!["VK_LAYER_LUNARG_standard_validation"],
 //            device_extensions: vec![DeviceExtensions.khr_swapchain],
@@ -146,7 +155,9 @@ impl App {
         }
     }
 
-    fn init_vulkan(glfw: &Glfw, window: &Window) -> Result<(Arc<Instance>, Option<DebugCallback>, Arc<Surface>), String> {
+    fn init_vulkan(glfw: &Glfw, window: &Window)
+        -> Result<(Arc<Instance>, Option<DebugCallback>, Arc<Surface>, Arc<GraphicsPipelineAbstract>, Arc<CpuAccessibleBuffer<[Vertex]>>), String>
+    {
         let mut vk_instance = App::create_instance(glfw)?;
         let debug_callback = App::setup_debug_callback(&vk_instance)?;
         let mut surface = App::create_surface(&vk_instance, glfw, window)?;
@@ -161,14 +172,15 @@ impl App {
         let (mut swapchain, mut images) = App::create_swap_chain(window, physical_device, &surface, &device, queue.clone())?;
 
         App::create_image_views()?;
-        App::create_render_pass(device.clone(), swapchain.clone())?;
-        App::create_graphics_pipeline(device.clone(), swapchain.clone())?;
+        let mut render_pass = App::create_render_pass(device.clone(), swapchain.clone())?;
+        let mut pipeline = App::create_graphics_pipeline(device.clone(), swapchain.clone(), render_pass.clone())?;
+        let mut vertex_buffer = App::create_vertex_buffer(device.clone())?;
         App::create_frame_buffers()?;
         App::create_command_pool()?;
         App::create_command_buffers()?;
         App::create_semaphores()?;
 
-        Ok((vk_instance.clone(), debug_callback, surface))
+        Ok((vk_instance.clone(), debug_callback, surface, pipeline, vertex_buffer))
     }
 
     fn create_instance(glfw: &Glfw) -> Result<Arc<Instance>, String> {
@@ -214,7 +226,7 @@ impl App {
         }
 
         let surface: Arc<Surface> = unsafe {
-            Arc::new(Surface::new( vk_instance.clone(), _surface))
+            Arc::new(Surface::from_raw_surface( vk_instance.clone(), _surface))
         };
 
         Ok(surface)
@@ -341,18 +353,13 @@ impl App {
         Ok(())
     }
 
-    fn create_render_pass(device: Arc<Device>, swapchain: Arc<Swapchain>) -> Result<(), String> {
-        //TODO
-        Ok(())
-    }
-
-    fn create_graphics_pipeline(device: Arc<Device>, swapchain: Arc<Swapchain>) -> Result<(), String> {
+    fn create_render_pass(device: Arc<Device>, swapchain: Arc<Swapchain>) -> Result<Arc<RenderPassAbstract + Send + Sync>, String> {
         // CREATE RENDER PASS
 
         // The next step is to create a *render pass*, which is an object that describes where the
         // output of the graphics pipeline will go. It describes the layout of the images
         // where the colors, depth and/or stencil information will be written.
-        let render_pass = Arc::new(single_pass_renderpass!(device.clone(),
+        Ok(Arc::new(single_pass_renderpass!(device.clone(),
             attachments: {
                 // `color` is a custom name we give to the first and only attachment.
                 color: {
@@ -378,8 +385,12 @@ impl App {
                 // No depth-stencil attachment is indicated with empty brackets.
                 depth_stencil: {}
             }
-        ).map_err(|e| format!("failed to create render pass: {}", e))?);
+        ).map_err(|e| format!("failed to create render pass: {}", e))?))
+    }
 
+    fn create_graphics_pipeline(device: Arc<Device>, swapchain: Arc<Swapchain>, render_pass: Arc<RenderPassAbstract + Send + Sync>)
+        -> Result<Arc<GraphicsPipelineAbstract>, String>
+    {
         // The next step is to create the shaders.
         //
         // The raw shader creation API provided by the vulkano library is unsafe, for various reasons.
@@ -389,18 +400,18 @@ impl App {
         let vs = {
             let mut f = File::open(vs_filepath).map_err(|e| format!("Error loading vertex shader: {} - Error: {}", vs_filepath, e))?;
             let mut v = vec![];
-            f.read_to_end(&mut v).unwrap();
+            f.read_to_end(&mut v).map_err(|e| format!("Impossible to read vertex shader file: {}", e))?;
             // Create a ShaderModule on a device the same Shader::load does it.
             // NOTE: You will have to verify correctness of the data by yourself!
-            unsafe { ShaderModule::new(device.clone(), &v) }.unwrap()
+            unsafe { ShaderModule::new(device.clone(), &v) }.map_err(|e| format!("Impossible to create vertex shader module: {}", e))?
         };
 
         let fs_filepath = concat!(env!("OUT_DIR"), "/shader.frag.spv");
         let fs = {
             let mut f = File::open(fs_filepath).map_err(|e| format!("Error loading fragment shader: {} - Error: {}", fs_filepath, e))?;
             let mut v = vec![];
-            f.read_to_end(&mut v).unwrap();
-            unsafe { ShaderModule::new(device.clone(), &v) }.unwrap()
+            f.read_to_end(&mut v).map_err(|e| format!("Impossible to read fragment shader file: {}", e))?;
+            unsafe { ShaderModule::new(device.clone(), &v) }.map_err(|e| format!("Impossible to create fragment shader module: {}", e))?
         };
 
         // This structure will tell Vulkan how input entries of our vertex shader
@@ -628,6 +639,13 @@ impl App {
             GraphicsShaderType::Fragment
         ) };
 
+        let sub_pass = Subpass::from(render_pass, 0);
+        let sub_pass = if sub_pass.is_some() {
+            sub_pass.unwrap()
+        } else {
+            return Err("Impossible to create subpass from renderpass".to_string());
+        };
+
         // Before we draw we have to create what is called a pipeline. This is similar to an OpenGL
         // program, but much more specific.
         let pipeline = Arc::new(GraphicsPipeline::start()
@@ -647,12 +665,26 @@ impl App {
             .fragment_shader(frag_main, ())
             // We have to indicate which subpass of which render pass this pipeline is going to be used
             // in. The pipeline will only be usable from this particular subpass.
-            .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
+            .render_pass(sub_pass)
             // Now that our builder is filled, we call `build()` to obtain an actual pipeline.
             .build(device.clone())
             .map_err(|e| format!("Error creating the pipeline: {}", e))?);
 
-        Ok(())
+        Ok(pipeline)
+    }
+
+    fn create_vertex_buffer(device: Arc<Device>) -> Result<Arc<CpuAccessibleBuffer<[Vertex]>>, String> {
+        let vertex_buffer = CpuAccessibleBuffer::from_iter(
+            device,
+            BufferUsage::all(),
+            [
+                Vertex { position: [-1.0,  1.0], color: [1.0, 0.0, 0.0] },
+                Vertex { position: [ 0.0, -1.0], color: [1.0, 0.0, 0.0] },
+                Vertex { position: [ 1.0,  1.0], color: [1.0, 0.0, 0.0] },
+            ].iter().cloned()
+        ).map_err(|e| format!("Failed to create Vertex Buffers: {}", e));
+
+        vertex_buffer
     }
 
     fn create_frame_buffers() -> Result<(), String> {
