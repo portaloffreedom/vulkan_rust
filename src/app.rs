@@ -1,20 +1,52 @@
+use std::borrow::Cow;
+use std::ffi::CStr;
+use std::fs::File;
+use std::io::Read;
+use std::ptr;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+
 use glfw;
 use glfw::Glfw;
 use glfw::Context;
 use glfw::Window;
+
 use vulkano;
+use vulkano::descriptor::descriptor::ShaderStages;
+use vulkano::descriptor::descriptor::DescriptorDesc;
+use vulkano::descriptor::pipeline_layout::PipelineLayoutDesc;
+use vulkano::descriptor::pipeline_layout::PipelineLayoutDescPcRange;
 use vulkano::device::DeviceExtensions;
+use vulkano::device::Device;
+use vulkano::device::{Queue, QueuesIter};
+use vulkano::format;
+use vulkano::framebuffer::RenderPass;
+use vulkano::framebuffer::Subpass;
+use vulkano::image::SwapchainImage;
 use vulkano::instance::PhysicalDevice;
 use vulkano::instance::Instance;
 use vulkano::instance::InstanceExtensions;
 use vulkano::instance::PhysicalDeviceType;
 use vulkano::instance::debug::DebugCallback;
+use vulkano::pipeline::GraphicsPipeline;
+use vulkano::pipeline::shader::ShaderModule;
+use vulkano::pipeline::shader::GraphicsShaderType;
+use vulkano::pipeline::shader::{ShaderInterfaceDef,ShaderInterfaceDefEntry};
+use vulkano::pipeline::vertex::SingleBufferDefinition;
 use vulkano::swapchain::Surface;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
-use std::ptr;
+use vulkano::swapchain::Swapchain;
+use vulkano::swapchain::SurfaceTransform;
+use vulkano::swapchain::PresentMode;
 
 static ENABLE_VALIDATION_LAYERS: bool = true;
+
+#[derive(Copy, Clone)]
+pub struct Vertex {
+    pub position: [f32; 2],
+    pub color: [f32; 3],
+}
+
+impl_vertex!(Vertex, position, color);
 
 fn required_extensions(glfw: &Glfw) -> InstanceExtensions {
     let mut ideal = InstanceExtensions {
@@ -119,11 +151,18 @@ impl App {
         let debug_callback = App::setup_debug_callback(&vk_instance)?;
         let mut surface = App::create_surface(&vk_instance, glfw, window)?;
         let mut physical_device = App::pick_physical_device(&vk_instance)?;
-        App::create_logical_device()?;
-        App::create_swap_chain()?;
+        let (mut device, mut queues) = App::create_logical_device(physical_device, &surface)?;
+
+        // Since we can request multiple queues, the `queues` variable is in fact an iterator. In this
+        // example we use only one queue, so we just retreive the first and only element of the
+        // iterator and throw it away.
+        let queue = queues.next().unwrap();
+
+        let (mut swapchain, mut images) = App::create_swap_chain(window, physical_device, &surface, &device, queue.clone())?;
+
         App::create_image_views()?;
-        App::create_render_pass()?;
-        App::create_graphics_pipeline()?;
+        App::create_render_pass(device.clone(), swapchain.clone())?;
+        App::create_graphics_pipeline(device.clone(), swapchain.clone())?;
         App::create_frame_buffers()?;
         App::create_command_pool()?;
         App::create_command_buffers()?;
@@ -164,18 +203,19 @@ impl App {
     fn create_surface(vk_instance: &Arc<Instance>, glfw: &Glfw, window: &Window) -> Result<Arc<Surface>, String> {
         use vulkano::VulkanObject;
 
-        let surface: Arc<Surface> = unsafe {
-            Arc::new(Surface::new( vk_instance.clone(), 0))
-        };
+        let mut _surface: u64 = 0;
 
         let result = unsafe {
-            glfw::ffi::glfwCreateWindowSurface(vk_instance.internal_object(), window.window_ptr(), ptr::null_mut(), &mut surface.internal_object())
+            glfw::ffi::glfwCreateWindowSurface(vk_instance.internal_object(), window.window_ptr(), ptr::null_mut(), &mut _surface)
         };
-
 
         if result != 0 { // 0 is VK_SUCCESS
             return Err("Error creating window surface".to_string());
         }
+
+        let surface: Arc<Surface> = unsafe {
+            Arc::new(Surface::new( vk_instance.clone(), _surface))
+        };
 
         Ok(surface)
     }
@@ -222,23 +262,396 @@ impl App {
         Ok(physical)
     }
 
-    fn create_logical_device() -> Result<(), String> {
-        Ok(())
+    fn create_logical_device(physical_device: PhysicalDevice, surface: &Surface) -> Result<(Arc<Device>, QueuesIter), String> {
+        // The next step is to choose which GPU queue will execute our draw commands.
+        //
+        // Devices can provide multiple queues to run commands in parallel (for example a draw queue
+        // and a compute queue), similar to CPU threads. This is something you have to have to manage
+        // manually in Vulkan.
+        //
+        // In a real-life application, we would probably use at least a graphics queue and a transfers
+        // queue to handle data transfers in parallel. In this example we only use one queue.
+        //
+        // We have to choose which queues to use early on, because we will need this info very soon.
+        let queues = physical_device.queue_families().find(|&q| {
+            // We take the first queue that supports drawing to our window.
+            q.supports_graphics() && surface.is_supported(q).unwrap_or(false)
+        });
+
+
+        if queues.is_none() {
+            return Err("couldn't find a graphical queue family".to_string());
+        }
+
+        // Now initializing the device. This is probably the most important object of Vulkan.
+        //
+        // We have to pass five parameters when creating a device:
+        //
+        // - Which physical device to connect to.
+        //
+        // - A list of optional features and extensions that our program needs to work correctly.
+        //   Some parts of the Vulkan specs are optional and must be enabled manually at device
+        //   creation. In this example the only thing we are going to need is the `khr_swapchain`
+        //   extension that allows us to draw to a window.
+        //
+        // - A list of layers to enable. This is very niche, and you will usually pass `None`.
+        //
+        // - The list of queues that we are going to use. The exact parameter is an iterator whose
+        //   items are `(Queue, f32)` where the floating-point represents the priority of the queue
+        //   between 0.0 and 1.0. The priority of the queue is a hint to the implementation about how
+        //   much it should prioritize queues between one another.
+        //
+        // The list of created queues is returned by the function alongside with the device.
+        let device_ext = vulkano::device::DeviceExtensions {
+            khr_swapchain: true,
+            .. vulkano::device::DeviceExtensions::none()
+        };
+
+        Device::new(physical_device, physical_device.supported_features(), &device_ext,
+                    [(queues.unwrap(), 0.5)].iter().cloned())
+            .map_err(|e| format!("failed to create device: {}", e))
     }
 
-    fn create_swap_chain() -> Result<(), String> {
-        Ok(())
+    fn create_swap_chain(window: &Window, physical_device: PhysicalDevice, surface: &Arc<Surface>, device: &Arc<Device>, queue: Arc<Queue>) -> Result<(Arc<Swapchain>, Vec<Arc<SwapchainImage>>), String> {
+        // Querying the capabilities of the surface. When we create the swapchain we can only
+        // pass values that are allowed by the capabilities.
+        let caps = surface.capabilities(physical_device)
+            .expect("failed to get surface capabilities");
+
+        // We choose the dimensions of the swapchain to match the current dimensions of the window.
+        // If `caps.current_extent` is `None`, this means that the window size will be determined
+        // by the dimensions of the swapchain, in which case we just use the width and height defined above.
+        let dimensions = caps.current_extent.unwrap_or([800, 600]);
+
+        // The alpha mode indicates how the alpha value of the final image will behave. For example
+        // you can choose whether the window will be opaque or transparent.
+        let alpha = caps.supported_composite_alpha.iter().next().unwrap();
+
+        // Choosing the internal format that the images will have.
+        let format = caps.supported_formats[0].0;
+
+        // Please take a look at the docs for the meaning of the parameters we didn't mention.
+        Swapchain::new(device.clone(), surface.clone(), caps.min_image_count, format,
+                       dimensions, 1, caps.supported_usage_flags, &queue,
+                       SurfaceTransform::Identity, alpha, PresentMode::Fifo, true,
+                       None).map_err(|e| format!("failed to create swapchain: {}", e))
     }
 
     fn create_image_views() -> Result<(), String> {
         Ok(())
     }
 
-    fn create_render_pass() -> Result<(), String> {
+    fn create_render_pass(device: Arc<Device>, swapchain: Arc<Swapchain>) -> Result<(), String> {
+        //TODO
         Ok(())
     }
 
-    fn create_graphics_pipeline() -> Result<(), String> {
+    fn create_graphics_pipeline(device: Arc<Device>, swapchain: Arc<Swapchain>) -> Result<(), String> {
+        // CREATE RENDER PASS
+
+        // The next step is to create a *render pass*, which is an object that describes where the
+        // output of the graphics pipeline will go. It describes the layout of the images
+        // where the colors, depth and/or stencil information will be written.
+        let render_pass = Arc::new(single_pass_renderpass!(device.clone(),
+            attachments: {
+                // `color` is a custom name we give to the first and only attachment.
+                color: {
+                    // `load: Clear` means that we ask the GPU to clear the content of this
+                    // attachment at the start of the drawing.
+                    load: Clear,
+                    // `store: Store` means that we ask the GPU to store the output of the draw
+                    // in the actual image. We could also ask it to discard the result.
+                    store: Store,
+                    // `format: <ty>` indicates the type of the format of the image. This has to
+                    // be one of the types of the `vulkano::format` module (or alternatively one
+                    // of your structs that implements the `FormatDesc` trait). Here we use the
+                    // generic `vulkano::format::Format` enum because we don't know the format in
+                    // advance.
+                    format: swapchain.format(),
+                    // TODO:
+                    samples: 1,
+                }
+            },
+            pass: {
+                // We use the attachment named `color` as the one and only color attachment.
+                color: [color],
+                // No depth-stencil attachment is indicated with empty brackets.
+                depth_stencil: {}
+            }
+        ).map_err(|e| format!("failed to create render pass: {}", e))?);
+
+        // The next step is to create the shaders.
+        //
+        // The raw shader creation API provided by the vulkano library is unsafe, for various reasons.
+        //
+        // TODO: explain this in details
+        let vs_filepath = concat!(env!("OUT_DIR"), "/shader.vert.spv");
+        let vs = {
+            let mut f = File::open(vs_filepath).map_err(|e| format!("Error loading vertex shader: {} - Error: {}", vs_filepath, e))?;
+            let mut v = vec![];
+            f.read_to_end(&mut v).unwrap();
+            // Create a ShaderModule on a device the same Shader::load does it.
+            // NOTE: You will have to verify correctness of the data by yourself!
+            unsafe { ShaderModule::new(device.clone(), &v) }.unwrap()
+        };
+
+        let fs_filepath = concat!(env!("OUT_DIR"), "/shader.frag.spv");
+        let fs = {
+            let mut f = File::open(fs_filepath).map_err(|e| format!("Error loading fragment shader: {} - Error: {}", fs_filepath, e))?;
+            let mut v = vec![];
+            f.read_to_end(&mut v).unwrap();
+            unsafe { ShaderModule::new(device.clone(), &v) }.unwrap()
+        };
+
+        // This structure will tell Vulkan how input entries of our vertex shader
+        // look like.
+        #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+        struct VertInput;
+        unsafe impl ShaderInterfaceDef for VertInput {
+            type Iter = VertInputIter;
+
+            fn elements(&self) -> VertInputIter {
+                VertInputIter(0)
+            }
+        }
+        #[derive(Debug, Copy, Clone)]
+        struct VertInputIter(u16);
+        impl Iterator for VertInputIter {
+            type Item = ShaderInterfaceDefEntry;
+
+            #[inline]
+            fn next(&mut self) -> Option<Self::Item> {
+                // There are things to consider when giving out entries:
+                // * There must be only one entry per one location, you can't have
+                //   `color' and `position' entries both at 0..1 locations.  They also
+                //   should not overlap.
+                // * Format of each element must be no larger than 128 bits.
+                if self.0 == 0 {
+                    self.0 += 1;
+                    return Some(ShaderInterfaceDefEntry {
+                        location: 1..2,
+                        format: format::Format::R32G32B32Sfloat,
+                        name: Some(Cow::Borrowed("color"))
+                    })
+                }
+                if self.0 == 1 {
+                    self.0 += 1;
+                    return Some(ShaderInterfaceDefEntry {
+                        location: 0..1,
+                        format: format::Format::R32G32Sfloat,
+                        name: Some(Cow::Borrowed("position"))
+                    })
+                }
+                None
+            }
+            #[inline]
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                // We must return exact number of entries left in iterator.
+                let len = (2 - self.0) as usize;
+                (len, Some(len))
+            }
+        }
+        impl ExactSizeIterator for VertInputIter {
+        }
+        #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+        struct VertOutput;
+        unsafe impl ShaderInterfaceDef for VertOutput {
+            type Iter = VertOutputIter;
+
+            fn elements(&self) -> VertOutputIter {
+                VertOutputIter(0)
+            }
+        }
+        // This structure will tell Vulkan how output entries (those passed to next
+        // stage) of our vertex shader look like.
+        #[derive(Debug, Copy, Clone)]
+        struct VertOutputIter(u16);
+        impl Iterator for VertOutputIter {
+            type Item = ShaderInterfaceDefEntry;
+
+            #[inline]
+            fn next(&mut self) -> Option<Self::Item> {
+                if self.0 == 0 {
+                    self.0 += 1;
+                    return Some(ShaderInterfaceDefEntry {
+                        location: 0..1,
+                        format: format::Format::R32G32B32Sfloat,
+                        name: Some(Cow::Borrowed("v_color"))
+                    })
+                }
+                None
+            }
+            #[inline]
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                let len = (1 - self.0) as usize;
+                (len, Some(len))
+            }
+        }
+        impl ExactSizeIterator for VertOutputIter {
+        }
+        // This structure describes layout of this stage.
+        #[derive(Debug, Copy, Clone)]
+        struct VertLayout(ShaderStages);
+        unsafe impl PipelineLayoutDesc for VertLayout {
+            // Number of descriptor sets it takes.
+            fn num_sets(&self) -> usize { 1 }
+            // Number of entries (bindings) in each set.
+            fn num_bindings_in_set(&self, set: usize) -> Option<usize> {
+                match set { 0 => Some(1), _ => None, }
+            }
+            // Descriptor descriptions.
+            fn descriptor(&self, set: usize, binding: usize) -> Option<DescriptorDesc> {
+                match (set, binding) { _ => None, }
+            }
+            // Number of push constants ranges (think: number of push constants).
+            fn num_push_constants_ranges(&self) -> usize { 0 }
+            // Each push constant range in memory.
+            fn push_constants_range(&self, num: usize) -> Option<PipelineLayoutDescPcRange> {
+                if num != 0 || 0 == 0 { return None; }
+                Some(PipelineLayoutDescPcRange { offset: 0,
+                    size: 0,
+                    stages: ShaderStages::all() })
+            }
+        }
+
+        // Same as with our vertex shader, but for fragment one instead.
+        #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+        struct FragInput;
+        unsafe impl ShaderInterfaceDef for FragInput {
+            type Iter = FragInputIter;
+
+            fn elements(&self) -> FragInputIter {
+                FragInputIter(0)
+            }
+        }
+        #[derive(Debug, Copy, Clone)]
+        struct FragInputIter(u16);
+        impl Iterator for FragInputIter {
+            type Item = ShaderInterfaceDefEntry;
+
+            #[inline]
+            fn next(&mut self) -> Option<Self::Item> {
+                if self.0 == 0 {
+                    self.0 += 1;
+                    return Some(ShaderInterfaceDefEntry {
+                        location: 0..1,
+                        format: format::Format::R32G32B32Sfloat,
+                        name: Some(Cow::Borrowed("v_color"))
+                    })
+                }
+                None
+            }
+            #[inline]
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                let len = (1 - self.0) as usize;
+                (len, Some(len))
+            }
+        }
+        impl ExactSizeIterator for FragInputIter {
+        }
+        #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+        struct FragOutput;
+        unsafe impl ShaderInterfaceDef for FragOutput {
+            type Iter = FragOutputIter;
+
+            fn elements(&self) -> FragOutputIter {
+                FragOutputIter(0)
+            }
+        }
+        #[derive(Debug, Copy, Clone)]
+        struct FragOutputIter(u16);
+        impl Iterator for FragOutputIter {
+            type Item = ShaderInterfaceDefEntry;
+
+            #[inline]
+            fn next(&mut self) -> Option<Self::Item> {
+                // Note that color fragment color entry will be determined
+                // automatically by Vulkano.
+                if self.0 == 0 {
+                    self.0 += 1;
+                    return Some(ShaderInterfaceDefEntry {
+                        location: 0..1,
+                        format: format::Format::R32G32B32A32Sfloat,
+                        name: Some(Cow::Borrowed("f_color"))
+                    })
+                }
+                None
+            }
+            #[inline]
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                let len = (1 - self.0) as usize;
+                (len, Some(len))
+            }
+        }
+        impl ExactSizeIterator for FragOutputIter {
+        }
+        // Layout same as with vertex shader.
+        #[derive(Debug, Copy, Clone)]
+        struct FragLayout(ShaderStages);
+        unsafe impl PipelineLayoutDesc for FragLayout {
+            fn num_sets(&self) -> usize { 1 }
+            fn num_bindings_in_set(&self, set: usize) -> Option<usize> {
+                match set { 0 => Some(1), _ => None, }
+            }
+            fn descriptor(&self, set: usize, binding: usize) -> Option<DescriptorDesc> {
+                match (set, binding) { _ => None, }
+            }
+            fn num_push_constants_ranges(&self) -> usize { 0 }
+            fn push_constants_range(&self, num: usize) -> Option<PipelineLayoutDescPcRange> {
+                if num != 0 || 0 == 0 { return None; }
+                Some(PipelineLayoutDescPcRange { offset: 0,
+                    size: 0,
+                    stages: ShaderStages::all() })
+            }
+        }
+
+        // NOTE: ShaderModule::*_shader_entry_point calls do not do any error
+        // checking and you have to verify correctness of what you are doing by
+        // yourself.
+        //
+        // You must be extra careful to specify correct entry point, or program will
+        // crash at runtime outside of rust and you will get NO meaningful error
+        // information!
+        let vert_main = unsafe { vs.graphics_entry_point(
+            CStr::from_bytes_with_nul_unchecked(b"main\0"),
+            VertInput,
+            VertOutput,
+            VertLayout(ShaderStages { vertex: true, ..ShaderStages::none() }),
+            GraphicsShaderType::Vertex
+        ) };
+
+        let frag_main = unsafe { fs.graphics_entry_point(
+            CStr::from_bytes_with_nul_unchecked(b"main\0"),
+            FragInput,
+            FragOutput,
+            FragLayout(ShaderStages { fragment: true, ..ShaderStages::none() }),
+            GraphicsShaderType::Fragment
+        ) };
+
+        // Before we draw we have to create what is called a pipeline. This is similar to an OpenGL
+        // program, but much more specific.
+        let pipeline = Arc::new(GraphicsPipeline::start()
+            // We need to indicate the layout of the vertices.
+            // The type `SingleBufferDefinition` actually contains a template parameter corresponding
+            // to the type of each vertex. But in this code it is automatically inferred.
+            .vertex_input(SingleBufferDefinition::<Vertex>::new())
+            // A Vulkan shader can in theory contain multiple entry points, so we have to specify
+            // which one. The `main` word of `main_entry_point` actually corresponds to the name of
+            // the entry point.
+            .vertex_shader(vert_main, ())
+            // The content of the vertex buffer describes a list of triangles.
+            .triangle_list()
+            // Use a resizable viewport set to draw over the entire window
+            .viewports_dynamic_scissors_irrelevant(1)
+            // See `vertex_shader`.
+            .fragment_shader(frag_main, ())
+            // We have to indicate which subpass of which render pass this pipeline is going to be used
+            // in. The pipeline will only be usable from this particular subpass.
+            .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
+            // Now that our builder is filled, we call `build()` to obtain an actual pipeline.
+            .build(device.clone())
+            .map_err(|e| format!("Error creating the pipeline: {}", e))?);
+
         Ok(())
     }
 

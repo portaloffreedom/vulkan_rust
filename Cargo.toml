@@ -2,6 +2,9 @@
 name = "vulkan_rust"
 version = "0.1.0"
 authors = ["Matteo De Carlo <matteo.dek@gmail.com>"]
+build = "build.rs"
+
+[dependencies]
 
 [dependencies.vulkano]
 vulkano = "0.6.0"
