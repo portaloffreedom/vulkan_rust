@@ -14,7 +14,9 @@ use vulkano;
 use vulkano::buffer::BufferUsage;
 use vulkano::buffer::cpu_access::CpuAccessibleBuffer;
 use vulkano::command_buffer::AutoCommandBufferBuilder;
+use vulkano::command_buffer::AutoCommandBuffer;
 use vulkano::command_buffer::DynamicState;
+use vulkano::command_buffer::pool::standard::StandardCommandPoolAlloc;
 use vulkano::descriptor::descriptor::ShaderStages;
 use vulkano::descriptor::descriptor::DescriptorDesc;
 use vulkano::descriptor::pipeline_layout::PipelineLayoutDesc;
@@ -111,6 +113,7 @@ pub struct App {
     vk_pipeline: Arc<GraphicsPipelineAbstract + Send + Sync>,
     vertex_buffer: Arc<CpuAccessibleBuffer<[Vertex]>>,
     framebuffers: Vec<Arc<Framebuffer<Arc<RenderPassAbstract + Send + Sync>, ((), Arc<SwapchainImage>)>>>,
+    command_buffers: Vec<Arc<AutoCommandBuffer<StandardCommandPoolAlloc>>>,
 //    vk_physical_device: PhysicalDevice,
 //    validation_layers: Vec<& 'static str>,
 //    device_extensions: Vec<DeviceExtensions>,
@@ -121,7 +124,7 @@ impl App {
     pub fn new(width: u32, height: u32) -> Result<App, String> {
         let title = "Vulkan test";
         let (mut glfw, mut window) = App::init_window(width, height, title)?;
-        let (mut instance, debug_callback, mut surface, mut device, mut graphic_queue, mut swapchain, mut render_pass, mut pipeline, mut vertex_buffer, mut framebuffers)
+        let (instance, debug_callback, surface, device, graphic_queue, swapchain, render_pass, pipeline, vertex_buffer, framebuffers, command_buffers )
             = App::init_vulkan(&glfw, &window)?;
 
         Ok(App {
@@ -140,6 +143,7 @@ impl App {
             vk_pipeline: pipeline,
             vertex_buffer: vertex_buffer,
             framebuffers: framebuffers,
+            command_buffers: command_buffers,
 //            vk_physical_device: physical_device,
 //            validation_layers: vec!["VK_LAYER_LUNARG_standard_validation"],
 //            device_extensions: vec![DeviceExtensions.khr_swapchain],
@@ -179,6 +183,7 @@ impl App {
             Arc<GraphicsPipelineAbstract + Send + Sync>,
             Arc<CpuAccessibleBuffer<[Vertex]>>,
             Vec<Arc<Framebuffer<Arc<RenderPassAbstract + Send + Sync>, ((), Arc<SwapchainImage>)>>>,
+            Vec<Arc<AutoCommandBuffer<StandardCommandPoolAlloc>>>,
         ), String>
     {
         let mut vk_instance = App::create_instance(glfw)?;
@@ -190,9 +195,9 @@ impl App {
         // Since we can request multiple queues, the `queues` variable is in fact an iterator. In this
         // example we use only one queue, so we just retreive the first and only element of the
         // iterator and throw it away.
-        let queue = queues.next().unwrap();
+        let graphic_queue = queues.next().unwrap();
 
-        let (mut swapchain, mut images) = App::create_swap_chain(window, physical_device, &surface, &device, queue.clone())?;
+        let (mut swapchain, mut images) = App::create_swap_chain(window, physical_device, &surface, &device, graphic_queue.clone())?;
 
         App::create_image_views()?;
         let mut render_pass = App::create_render_pass(device.clone(), swapchain.clone())?;
@@ -200,10 +205,10 @@ impl App {
         let mut vertex_buffer = App::create_vertex_buffer(device.clone())?;
         let mut framebuffers = App::create_frame_buffers(images, render_pass.clone())?;
         App::create_command_pool()?;
-        App::create_command_buffers()?;
+        let mut command_buffers = App::create_command_buffers(&device, &graphic_queue, &pipeline, &vertex_buffer, &framebuffers)?;
         App::create_semaphores()?;
 
-        Ok((vk_instance.clone(), debug_callback, surface, device, queue, swapchain, render_pass, pipeline, vertex_buffer, framebuffers))
+        Ok((vk_instance.clone(), debug_callback, surface, device, graphic_queue, swapchain, render_pass, pipeline, vertex_buffer, framebuffers, command_buffers))
     }
 
     fn create_instance(glfw: &Glfw) -> Result<Arc<Instance>, String> {
@@ -740,8 +745,34 @@ impl App {
         Ok(())
     }
 
-    fn create_command_buffers() -> Result<(), String> {
-        Ok(())
+    fn create_command_buffers(device: &Arc<Device>,
+                              graphic_queue: &Arc<Queue>,
+                              pipeline: &Arc<GraphicsPipelineAbstract + Send + Sync>,
+                              vertex_buffer: &Arc<CpuAccessibleBuffer<[Vertex]>>,
+                              framebuffers: &Vec<Arc<Framebuffer<Arc<RenderPassAbstract + Send + Sync>, ((), Arc<SwapchainImage>)>>>)
+        -> Result<Vec<Arc<AutoCommandBuffer<StandardCommandPoolAlloc>>>, String>
+    {
+        Ok(framebuffers.iter()
+            .map(|framebuffer|
+                Arc::new(AutoCommandBufferBuilder::new(
+                    device.clone(),
+                    graphic_queue.family(),
+                ).unwrap()
+                .begin_render_pass(
+                    framebuffer.clone(),
+                    false,
+                    vec![[0.0, 0.0, 0.0, 1.0].into(), 1.0.into()],
+                ).unwrap()
+                .draw(
+                    pipeline.clone(),
+                    DynamicState::none(),
+                    vec![vertex_buffer.clone()],
+                    (),
+                    (),
+                ).unwrap()
+                .end_render_pass().unwrap()
+                .build().unwrap())
+            ).collect())
     }
 
     fn create_semaphores() -> Result<(), String> {
@@ -765,31 +796,8 @@ impl App {
             None,
         ).expect("failed to acquire swapchain in time");
 
-        let command_buffer = AutoCommandBufferBuilder::new(
-            self.vk_device.clone(),
-            self.vk_graphic_queue.family(),
-        ).unwrap();
-
-        let command_buffer = command_buffer.begin_render_pass(
-            self.framebuffers[image_num].clone(),
-            false,
-            vec![[0.0, 0.0, 0.0, 1.0].into(), 1.0.into()],
-        ).unwrap();
-
-        let command_buffer = command_buffer.draw(
-            self.vk_pipeline.clone(),
-            DynamicState::none(),
-            vec![self.vertex_buffer.clone()],
-            (),
-            (),
-        ).unwrap();
-
-        let command_buffer = command_buffer.end_render_pass().unwrap();
-
-        let command_buffer = command_buffer.build().unwrap();
-
         acquire_future
-            .then_execute(self.vk_graphic_queue.clone(), command_buffer).unwrap()
+            .then_execute(self.vk_graphic_queue.clone(), self.command_buffers[image_num].clone()).unwrap()
             .then_swapchain_present(self.vk_graphic_queue.clone(), self.vk_swapchain.clone(), image_num)
             .then_signal_fence_and_flush().unwrap()
             .wait(None).unwrap();
