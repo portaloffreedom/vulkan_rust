@@ -4,7 +4,6 @@ use std::fs::File;
 use std::io::Read;
 use std::ptr;
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 
 use glfw;
 use glfw::Glfw;
@@ -19,15 +18,11 @@ use vulkano::command_buffer::DynamicState;
 use vulkano::descriptor::descriptor::ShaderStages;
 use vulkano::descriptor::descriptor::DescriptorDesc;
 use vulkano::descriptor::pipeline_layout::PipelineLayoutDesc;
-use vulkano::descriptor::pipeline_layout::PipelineLayoutAbstract;
 use vulkano::descriptor::pipeline_layout::PipelineLayoutDescPcRange;
-use vulkano::device::DeviceExtensions;
 use vulkano::device::Device;
 use vulkano::device::{Queue, QueuesIter};
 use vulkano::format;
 use vulkano::framebuffer::Framebuffer;
-use vulkano::framebuffer::FramebufferAbstract;
-use vulkano::framebuffer::RenderPass;
 use vulkano::framebuffer::RenderPassAbstract;
 use vulkano::framebuffer::Subpass;
 use vulkano::image::SwapchainImage;
@@ -755,7 +750,8 @@ impl App {
 
 
     fn main_loop(mut self) -> Result<(), String> {
-        for i in 0..10000000 {
+        while !self.window.should_close() {
+            self.glfw.poll_events();
             self.draw_frame();
         }
 

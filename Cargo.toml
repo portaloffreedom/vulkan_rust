@@ -7,8 +7,9 @@ build = "build.rs"
 [dependencies]
 
 [dependencies.vulkano]
-vulkano = "0.6.0"
+version = "0.6.0"
 git = "https://github.com/portaloffreedom/vulkano.git"
+#path = "../vulkano/vulkano"
 
 [dependencies.glfw]
 version = "0.16.0"

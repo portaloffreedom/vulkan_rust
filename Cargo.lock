@@ -235,12 +235,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 [[package]]
 name = "vk-sys"
 version = "0.3.1"
-source = "git+https://github.com/portaloffreedom/vulkano.git#05674c3ecee7a3dd5102f73f8188afa0e0b48308"
+source = "git+https://github.com/portaloffreedom/vulkano.git#980adc7858469480d80f1b1391363bd076ae5d19"
 
 [[package]]
 name = "vulkano"
 version = "0.6.0"
-source = "git+https://github.com/portaloffreedom/vulkano.git#05674c3ecee7a3dd5102f73f8188afa0e0b48308"
+source = "git+https://github.com/portaloffreedom/vulkano.git#980adc7858469480d80f1b1391363bd076ae5d19"
 dependencies = [
  "crossbeam 0.2.10 (registry+https://github.com/rust-lang/crates.io-index)",
  "fnv 1.0.5 (registry+https://github.com/rust-lang/crates.io-index)",
