@@ -14,6 +14,8 @@ use glfw::Window;
 use vulkano;
 use vulkano::buffer::BufferUsage;
 use vulkano::buffer::cpu_access::CpuAccessibleBuffer;
+use vulkano::command_buffer::AutoCommandBufferBuilder;
+use vulkano::command_buffer::DynamicState;
 use vulkano::descriptor::descriptor::ShaderStages;
 use vulkano::descriptor::descriptor::DescriptorDesc;
 use vulkano::descriptor::pipeline_layout::PipelineLayoutDesc;
@@ -23,6 +25,8 @@ use vulkano::device::DeviceExtensions;
 use vulkano::device::Device;
 use vulkano::device::{Queue, QueuesIter};
 use vulkano::format;
+use vulkano::framebuffer::Framebuffer;
+use vulkano::framebuffer::FramebufferAbstract;
 use vulkano::framebuffer::RenderPass;
 use vulkano::framebuffer::RenderPassAbstract;
 use vulkano::framebuffer::Subpass;
@@ -38,10 +42,12 @@ use vulkano::pipeline::shader::ShaderModule;
 use vulkano::pipeline::shader::GraphicsShaderType;
 use vulkano::pipeline::shader::{ShaderInterfaceDef,ShaderInterfaceDefEntry};
 use vulkano::pipeline::vertex::SingleBufferDefinition;
+use vulkano::pipeline::viewport::Viewport;
 use vulkano::swapchain::Surface;
 use vulkano::swapchain::Swapchain;
 use vulkano::swapchain::SurfaceTransform;
 use vulkano::swapchain::PresentMode;
+use vulkano::sync::GpuFuture;
 
 static ENABLE_VALIDATION_LAYERS: bool = true;
 
@@ -103,8 +109,13 @@ pub struct App {
     vk_instance: Arc<Instance>,
     vk_debug_callback: Option<DebugCallback>,
     vk_surface: Arc<Surface>,
-    vk_pipeline: Arc<GraphicsPipelineAbstract>,
-    vertex_buffer: Arc<CpuAccessibleBuffer<[Vertex]>>
+    vk_device: Arc<Device>,
+    vk_graphic_queue: Arc<Queue>,
+    vk_swapchain: Arc<Swapchain>,
+    vk_renderpass: Arc<RenderPassAbstract + Send + Sync>,
+    vk_pipeline: Arc<GraphicsPipelineAbstract + Send + Sync>,
+    vertex_buffer: Arc<CpuAccessibleBuffer<[Vertex]>>,
+    framebuffers: Vec<Arc<Framebuffer<Arc<RenderPassAbstract + Send + Sync>, ((), Arc<SwapchainImage>)>>>,
 //    vk_physical_device: PhysicalDevice,
 //    validation_layers: Vec<& 'static str>,
 //    device_extensions: Vec<DeviceExtensions>,
@@ -115,7 +126,8 @@ impl App {
     pub fn new(width: u32, height: u32) -> Result<App, String> {
         let title = "Vulkan test";
         let (mut glfw, mut window) = App::init_window(width, height, title)?;
-        let (mut instance, debug_callback, mut surface, mut pipeline, mut vertex_buffer) = App::init_vulkan(&glfw, &window)?;
+        let (mut instance, debug_callback, mut surface, mut device, mut graphic_queue, mut swapchain, mut render_pass, mut pipeline, mut vertex_buffer, mut framebuffers)
+            = App::init_vulkan(&glfw, &window)?;
 
         Ok(App {
             title: title,
@@ -126,8 +138,13 @@ impl App {
             vk_instance: instance,
             vk_debug_callback: debug_callback,
             vk_surface: surface,
+            vk_device: device,
+            vk_graphic_queue: graphic_queue,
+            vk_swapchain: swapchain,
+            vk_renderpass: render_pass,
             vk_pipeline: pipeline,
             vertex_buffer: vertex_buffer,
+            framebuffers: framebuffers,
 //            vk_physical_device: physical_device,
 //            validation_layers: vec!["VK_LAYER_LUNARG_standard_validation"],
 //            device_extensions: vec![DeviceExtensions.khr_swapchain],
@@ -156,7 +173,18 @@ impl App {
     }
 
     fn init_vulkan(glfw: &Glfw, window: &Window)
-        -> Result<(Arc<Instance>, Option<DebugCallback>, Arc<Surface>, Arc<GraphicsPipelineAbstract>, Arc<CpuAccessibleBuffer<[Vertex]>>), String>
+        -> Result<(
+            Arc<Instance>,
+            Option<DebugCallback>,
+            Arc<Surface>,
+            Arc<Device>,
+            Arc<Queue>,
+            Arc<Swapchain>,
+            Arc<RenderPassAbstract + Send + Sync>,
+            Arc<GraphicsPipelineAbstract + Send + Sync>,
+            Arc<CpuAccessibleBuffer<[Vertex]>>,
+            Vec<Arc<Framebuffer<Arc<RenderPassAbstract + Send + Sync>, ((), Arc<SwapchainImage>)>>>,
+        ), String>
     {
         let mut vk_instance = App::create_instance(glfw)?;
         let debug_callback = App::setup_debug_callback(&vk_instance)?;
@@ -173,14 +201,14 @@ impl App {
 
         App::create_image_views()?;
         let mut render_pass = App::create_render_pass(device.clone(), swapchain.clone())?;
-        let mut pipeline = App::create_graphics_pipeline(device.clone(), swapchain.clone(), render_pass.clone())?;
+        let mut pipeline = App::create_graphics_pipeline(device.clone(), swapchain.clone(), &images, render_pass.clone())?;
         let mut vertex_buffer = App::create_vertex_buffer(device.clone())?;
-        App::create_frame_buffers()?;
+        let mut framebuffers = App::create_frame_buffers(images, render_pass.clone())?;
         App::create_command_pool()?;
         App::create_command_buffers()?;
         App::create_semaphores()?;
 
-        Ok((vk_instance.clone(), debug_callback, surface, pipeline, vertex_buffer))
+        Ok((vk_instance.clone(), debug_callback, surface, device, queue, swapchain, render_pass, pipeline, vertex_buffer, framebuffers))
     }
 
     fn create_instance(glfw: &Glfw) -> Result<Arc<Instance>, String> {
@@ -324,7 +352,9 @@ impl App {
             .map_err(|e| format!("failed to create device: {}", e))
     }
 
-    fn create_swap_chain(window: &Window, physical_device: PhysicalDevice, surface: &Arc<Surface>, device: &Arc<Device>, queue: Arc<Queue>) -> Result<(Arc<Swapchain>, Vec<Arc<SwapchainImage>>), String> {
+    fn create_swap_chain(window: &Window, physical_device: PhysicalDevice, surface: &Arc<Surface>, device: &Arc<Device>, queue: Arc<Queue>)
+        -> Result<(Arc<Swapchain>, Vec<Arc<SwapchainImage>>), String>
+    {
         // Querying the capabilities of the surface. When we create the swapchain we can only
         // pass values that are allowed by the capabilities.
         let caps = surface.capabilities(physical_device)
@@ -388,8 +418,8 @@ impl App {
         ).map_err(|e| format!("failed to create render pass: {}", e))?))
     }
 
-    fn create_graphics_pipeline(device: Arc<Device>, swapchain: Arc<Swapchain>, render_pass: Arc<RenderPassAbstract + Send + Sync>)
-        -> Result<Arc<GraphicsPipelineAbstract>, String>
+    fn create_graphics_pipeline(device: Arc<Device>, swapchain: Arc<Swapchain>, images: &Vec<Arc<SwapchainImage>>, render_pass: Arc<RenderPassAbstract + Send + Sync>)
+        -> Result<Arc<GraphicsPipelineAbstract + Send + Sync>, String>
     {
         // The next step is to create the shaders.
         //
@@ -659,10 +689,21 @@ impl App {
             .vertex_shader(vert_main, ())
             // The content of the vertex buffer describes a list of triangles.
             .triangle_list()
-            // Use a resizable viewport set to draw over the entire window
-            .viewports_dynamic_scissors_irrelevant(1)
+            .viewports([
+                Viewport {
+                    origin: [0.0, 0.0],
+                    depth_range: 0.0..1.0,
+                    dimensions: [
+                        images[0].dimensions()[0] as f32,
+                        images[0].dimensions()[1] as f32,
+                    ],
+                },
+            ].iter().cloned())
             // See `vertex_shader`.
             .fragment_shader(frag_main, ())
+            .cull_mode_front()
+            .front_face_counter_clockwise()
+            .depth_stencil_disabled()
             // We have to indicate which subpass of which render pass this pipeline is going to be used
             // in. The pipeline will only be usable from this particular subpass.
             .render_pass(sub_pass)
@@ -674,7 +715,7 @@ impl App {
     }
 
     fn create_vertex_buffer(device: Arc<Device>) -> Result<Arc<CpuAccessibleBuffer<[Vertex]>>, String> {
-        let vertex_buffer = CpuAccessibleBuffer::from_iter(
+        CpuAccessibleBuffer::from_iter(
             device,
             BufferUsage::all(),
             [
@@ -682,13 +723,22 @@ impl App {
                 Vertex { position: [ 0.0, -1.0], color: [1.0, 0.0, 0.0] },
                 Vertex { position: [ 1.0,  1.0], color: [1.0, 0.0, 0.0] },
             ].iter().cloned()
-        ).map_err(|e| format!("Failed to create Vertex Buffers: {}", e));
-
-        vertex_buffer
+        ).map_err(|e| format!("Failed to create Vertex Buffers: {}", e))
     }
 
-    fn create_frame_buffers() -> Result<(), String> {
-        Ok(())
+    fn create_frame_buffers(images: Vec<Arc<SwapchainImage>>,render_pass: Arc<RenderPassAbstract + Send + Sync>)
+        -> Result<Vec<Arc<Framebuffer<Arc<RenderPassAbstract + Send + Sync>, ((), Arc<SwapchainImage>)>>>, String>
+    {
+        let framebuffers: Vec<_> = images
+            .iter()
+            .map(|image| Arc::new(
+                Framebuffer::start(render_pass.clone())
+                    .add(image.clone()).unwrap()
+                    .build().unwrap(),
+            ))
+            .collect();
+
+        Ok(framebuffers)
     }
 
     fn create_command_pool() -> Result<(), String> {
@@ -714,5 +764,38 @@ impl App {
 
     fn draw_frame(&self) {
 //        println!("New Frame!");
+        let (image_num, acquire_future) = vulkano::swapchain::acquire_next_image(
+            self.vk_swapchain.clone(),
+            None,
+        ).expect("failed to acquire swapchain in time");
+
+        let command_buffer = AutoCommandBufferBuilder::new(
+            self.vk_device.clone(),
+            self.vk_graphic_queue.family(),
+        ).unwrap();
+
+        let command_buffer = command_buffer.begin_render_pass(
+            self.framebuffers[image_num].clone(),
+            false,
+            vec![[0.0, 0.0, 0.0, 1.0].into(), 1.0.into()],
+        ).unwrap();
+
+        let command_buffer = command_buffer.draw(
+            self.vk_pipeline.clone(),
+            DynamicState::none(),
+            vec![self.vertex_buffer.clone()],
+            (),
+            (),
+        ).unwrap();
+
+        let command_buffer = command_buffer.end_render_pass().unwrap();
+
+        let command_buffer = command_buffer.build().unwrap();
+
+        acquire_future
+            .then_execute(self.vk_graphic_queue.clone(), command_buffer).unwrap()
+            .then_swapchain_present(self.vk_graphic_queue.clone(), self.vk_swapchain.clone(), image_num)
+            .then_signal_fence_and_flush().unwrap()
+            .wait(None).unwrap();
     }
 }
