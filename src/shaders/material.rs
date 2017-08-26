@@ -36,11 +36,6 @@ impl Material {
             .map_err(|e| format!("Error loading image file: {} - Error: {}", path.as_ref().display(), e))?;
         let file = BufReader::new(file);
 
-//        let image = image::load_from_memory_with_format(include_bytes!("../../resources/GroundForest003_1k/GroundForest003_COL_VAR1_1K.jpg"),
-//                                                        image::ImageFormat::JPEG)
-//            .map_err(|e| format!("Error loading image: {}", e))?
-//            .to_rgba();
-
         let extension = path.as_ref().extension()
             .ok_or(format!("No extension found on image file \"{}\"", path.as_ref().display()))?
             .to_string_lossy();
