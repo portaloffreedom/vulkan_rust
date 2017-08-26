@@ -1,7 +1,3 @@
-use std::borrow::Cow;
-use std::ffi::CStr;
-use std::fs::File;
-use std::io::Read;
 use std::ptr;
 use std::sync::Arc;
 
@@ -18,13 +14,8 @@ use vulkano::command_buffer::AutoCommandBuffer;
 use vulkano::command_buffer::DynamicState;
 use vulkano::command_buffer::CommandBufferExecFuture;
 use vulkano::command_buffer::pool::standard::StandardCommandPoolAlloc;
-use vulkano::descriptor::descriptor::ShaderStages;
-use vulkano::descriptor::descriptor::DescriptorDesc;
-use vulkano::descriptor::pipeline_layout::PipelineLayoutDesc;
-use vulkano::descriptor::pipeline_layout::PipelineLayoutDescPcRange;
 use vulkano::device::Device;
 use vulkano::device::{Queue, QueuesIter};
-use vulkano::format;
 use vulkano::framebuffer::Framebuffer;
 use vulkano::framebuffer::RenderPassAbstract;
 use vulkano::framebuffer::Subpass;
@@ -37,9 +28,6 @@ use vulkano::instance::PhysicalDeviceType;
 use vulkano::instance::debug::DebugCallback;
 use vulkano::pipeline::GraphicsPipeline;
 use vulkano::pipeline::GraphicsPipelineAbstract;
-use vulkano::pipeline::shader::ShaderModule;
-use vulkano::pipeline::shader::GraphicsShaderType;
-use vulkano::pipeline::shader::{ShaderInterfaceDef,ShaderInterfaceDefEntry};
 use vulkano::pipeline::vertex::SingleBufferDefinition;
 use vulkano::pipeline::viewport::Viewport;
 use vulkano::swapchain::Surface;
@@ -49,15 +37,10 @@ use vulkano::swapchain::PresentMode;
 use vulkano::sync::GpuFuture;
 use vulkano::sync::NowFuture;
 
+use shaders::Shader;
+use shaders::Vertex;
+
 static ENABLE_VALIDATION_LAYERS: bool = true;
-
-#[derive(Copy, Clone)]
-pub struct Vertex {
-    pub position: [f32; 2],
-    pub color: [f32; 3],
-}
-
-impl_vertex!(Vertex, position, color);
 
 fn required_extensions(glfw: &Glfw) -> InstanceExtensions {
     let mut ideal = InstanceExtensions {
@@ -431,273 +414,8 @@ impl App {
         //
         // TODO: explain this in details
         let vs_filepath = concat!(env!("OUT_DIR"), "/shader.vert.spv");
-        let vs = {
-            let mut f = File::open(vs_filepath).map_err(|e| format!("Error loading vertex shader: {} - Error: {}", vs_filepath, e))?;
-            let mut v = vec![];
-            f.read_to_end(&mut v).map_err(|e| format!("Impossible to read vertex shader file: {}", e))?;
-            // Create a ShaderModule on a device the same Shader::load does it.
-            // NOTE: You will have to verify correctness of the data by yourself!
-            unsafe { ShaderModule::new(device.clone(), &v) }.map_err(|e| format!("Impossible to create vertex shader module: {}", e))?
-        };
-
         let fs_filepath = concat!(env!("OUT_DIR"), "/shader.frag.spv");
-        let fs = {
-            let mut f = File::open(fs_filepath).map_err(|e| format!("Error loading fragment shader: {} - Error: {}", fs_filepath, e))?;
-            let mut v = vec![];
-            f.read_to_end(&mut v).map_err(|e| format!("Impossible to read fragment shader file: {}", e))?;
-            unsafe { ShaderModule::new(device.clone(), &v) }.map_err(|e| format!("Impossible to create fragment shader module: {}", e))?
-        };
-
-        // This structure will tell Vulkan how input entries of our vertex shader
-        // look like.
-        #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-        struct VertInput;
-        unsafe impl ShaderInterfaceDef for VertInput {
-            type Iter = VertInputIter;
-
-            fn elements(&self) -> VertInputIter {
-                VertInputIter(0)
-            }
-        }
-        #[derive(Debug, Copy, Clone)]
-        struct VertInputIter(u16);
-        impl Iterator for VertInputIter {
-            type Item = ShaderInterfaceDefEntry;
-
-            #[inline]
-            fn next(&mut self) -> Option<Self::Item> {
-                // There are things to consider when giving out entries:
-                // * There must be only one entry per one location, you can't have
-                //   `color' and `position' entries both at 0..1 locations.  They also
-                //   should not overlap.
-                // * Format of each element must be no larger than 128 bits.
-                if self.0 == 0 {
-                    self.0 += 1;
-                    return Some(ShaderInterfaceDefEntry {
-                        location: 1..2,
-                        format: format::Format::R32G32B32Sfloat,
-                        name: Some(Cow::Borrowed("color"))
-                    })
-                }
-                if self.0 == 1 {
-                    self.0 += 1;
-                    return Some(ShaderInterfaceDefEntry {
-                        location: 0..1,
-                        format: format::Format::R32G32Sfloat,
-                        name: Some(Cow::Borrowed("position"))
-                    })
-                }
-                None
-            }
-            #[inline]
-            fn size_hint(&self) -> (usize, Option<usize>) {
-                // We must return exact number of entries left in iterator.
-                let len = (2 - self.0) as usize;
-                (len, Some(len))
-            }
-        }
-        impl ExactSizeIterator for VertInputIter {
-        }
-        #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-        struct VertOutput;
-        unsafe impl ShaderInterfaceDef for VertOutput {
-            type Iter = VertOutputIter;
-
-            fn elements(&self) -> VertOutputIter {
-                VertOutputIter(0)
-            }
-        }
-        // This structure will tell Vulkan how output entries (those passed to next
-        // stage) of our vertex shader look like.
-        #[derive(Debug, Copy, Clone)]
-        struct VertOutputIter(u16);
-        impl Iterator for VertOutputIter {
-            type Item = ShaderInterfaceDefEntry;
-
-            #[inline]
-            fn next(&mut self) -> Option<Self::Item> {
-                if self.0 == 0 {
-                    self.0 += 1;
-                    return Some(ShaderInterfaceDefEntry {
-                        location: 0..1,
-                        format: format::Format::R32G32B32Sfloat,
-                        name: Some(Cow::Borrowed("v_color"))
-                    })
-                }
-                None
-            }
-            #[inline]
-            fn size_hint(&self) -> (usize, Option<usize>) {
-                let len = (1 - self.0) as usize;
-                (len, Some(len))
-            }
-        }
-        impl ExactSizeIterator for VertOutputIter {
-        }
-        // This structure describes layout of this stage.
-        #[derive(Debug, Copy, Clone)]
-        struct VertLayout(ShaderStages);
-        unsafe impl PipelineLayoutDesc for VertLayout {
-            // Number of descriptor sets it takes.
-            fn num_sets(&self) -> usize { 1 }
-            // Number of entries (bindings) in each set.
-            fn num_bindings_in_set(&self, set: usize) -> Option<usize> {
-                match set { 0 => Some(1), _ => None, }
-            }
-            // Descriptor descriptions.
-            fn descriptor(&self, set: usize, binding: usize) -> Option<DescriptorDesc> {
-                match (set, binding) { _ => None, }
-            }
-            // Number of push constants ranges (think: number of push constants).
-            fn num_push_constants_ranges(&self) -> usize { 0 }
-            // Each push constant range in memory.
-            fn push_constants_range(&self, num: usize) -> Option<PipelineLayoutDescPcRange> {
-                if num != 0 || 0 == 0 { return None; }
-                Some(PipelineLayoutDescPcRange { offset: 0,
-                    size: 0,
-                    stages: ShaderStages::all() })
-            }
-        }
-
-        // Same as with our vertex shader, but for fragment one instead.
-        #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-        struct FragInput;
-        unsafe impl ShaderInterfaceDef for FragInput {
-            type Iter = FragInputIter;
-
-            fn elements(&self) -> FragInputIter {
-                FragInputIter(0)
-            }
-        }
-        #[derive(Debug, Copy, Clone)]
-        struct FragInputIter(u16);
-        impl Iterator for FragInputIter {
-            type Item = ShaderInterfaceDefEntry;
-
-            #[inline]
-            fn next(&mut self) -> Option<Self::Item> {
-                if self.0 == 0 {
-                    self.0 += 1;
-                    return Some(ShaderInterfaceDefEntry {
-                        location: 0..1,
-                        format: format::Format::R32G32B32Sfloat,
-                        name: Some(Cow::Borrowed("v_color"))
-                    })
-                }
-                None
-            }
-            #[inline]
-            fn size_hint(&self) -> (usize, Option<usize>) {
-                let len = (1 - self.0) as usize;
-                (len, Some(len))
-            }
-        }
-        impl ExactSizeIterator for FragInputIter {
-        }
-        #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-        struct FragOutput;
-        unsafe impl ShaderInterfaceDef for FragOutput {
-            type Iter = FragOutputIter;
-
-            fn elements(&self) -> FragOutputIter {
-                FragOutputIter(0)
-            }
-        }
-        #[derive(Debug, Copy, Clone)]
-        struct FragOutputIter(u16);
-        impl Iterator for FragOutputIter {
-            type Item = ShaderInterfaceDefEntry;
-
-            #[inline]
-            fn next(&mut self) -> Option<Self::Item> {
-                // Note that color fragment color entry will be determined
-                // automatically by Vulkano.
-                if self.0 == 0 {
-                    self.0 += 1;
-                    return Some(ShaderInterfaceDefEntry {
-                        location: 0..1,
-                        format: format::Format::R32G32B32A32Sfloat,
-                        name: Some(Cow::Borrowed("f_color"))
-                    })
-                }
-                None
-            }
-            #[inline]
-            fn size_hint(&self) -> (usize, Option<usize>) {
-                let len = (1 - self.0) as usize;
-                (len, Some(len))
-            }
-        }
-        impl ExactSizeIterator for FragOutputIter {
-        }
-        // Layout same as with vertex shader.
-        #[derive(Debug, Copy, Clone)]
-        struct FragLayout(ShaderStages);
-        unsafe impl PipelineLayoutDesc for FragLayout {
-            fn num_sets(&self) -> usize { 1 }
-            fn num_bindings_in_set(&self, set: usize) -> Option<usize> {
-                match set { 0 => Some(1), _ => None, }
-            }
-            fn descriptor(&self, set: usize, binding: usize) -> Option<DescriptorDesc> {
-                use vulkano::descriptor::descriptor::{DescriptorDescTy, ShaderStages, DescriptorImageDesc, DescriptorImageDescDimensions, DescriptorImageDescArray};
-                use vulkano::format::Format;
-
-                match (set, binding) {
-                    (0, 0) => Some(DescriptorDesc {
-                        ty: DescriptorDescTy::CombinedImageSampler({
-                            DescriptorImageDesc {
-                                sampled: true,
-                                dimensions: DescriptorImageDescDimensions::TwoDimensional,
-                                format: Some(Format::R8G8B8A8Srgb),
-                                multisampled: false,
-                                array_layers: DescriptorImageDescArray::NonArrayed,
-                            }
-                        }),
-                        array_count: 1,
-                        stages: ShaderStages {
-                            vertex: false,
-                            tessellation_control: false,
-                            tessellation_evaluation: false,
-                            geometry: false,
-                            fragment: true,
-                            compute: false,
-                        },
-                        readonly: true,
-                    }),
-                    _ => None,
-                }
-            }
-            fn num_push_constants_ranges(&self) -> usize { 0 }
-            fn push_constants_range(&self, num: usize) -> Option<PipelineLayoutDescPcRange> {
-                if num != 0 || 0 == 0 { return None; }
-                Some(PipelineLayoutDescPcRange { offset: 0,
-                    size: 0,
-                    stages: ShaderStages::all() })
-            }
-        }
-
-        // NOTE: ShaderModule::*_shader_entry_point calls do not do any error
-        // checking and you have to verify correctness of what you are doing by
-        // yourself.
-        //
-        // You must be extra careful to specify correct entry point, or program will
-        // crash at runtime outside of rust and you will get NO meaningful error
-        // information!
-        let vert_main = unsafe { vs.graphics_entry_point(
-            CStr::from_bytes_with_nul_unchecked(b"main\0"),
-            VertInput,
-            VertOutput,
-            VertLayout(ShaderStages { vertex: true, ..ShaderStages::none() }),
-            GraphicsShaderType::Vertex
-        ) };
-
-        let frag_main = unsafe { fs.graphics_entry_point(
-            CStr::from_bytes_with_nul_unchecked(b"main\0"),
-            FragInput,
-            FragOutput,
-            FragLayout(ShaderStages { fragment: true, ..ShaderStages::none() }),
-            GraphicsShaderType::Fragment
-        ) };
+        let mut shader = Shader::new(device.clone(), vs_filepath, fs_filepath)?;
 
         let sub_pass = Subpass::from(render_pass, 0);
         let sub_pass = if sub_pass.is_some() {
@@ -705,6 +423,8 @@ impl App {
         } else {
             return Err("Impossible to create subpass from renderpass".to_string());
         };
+
+        let (vert_entry_point, frag_entry_point) = shader.entry_points()?;
 
         // Before we draw we have to create what is called a pipeline. This is similar to an OpenGL
         // program, but much more specific.
@@ -716,7 +436,7 @@ impl App {
             // A Vulkan shader can in theory contain multiple entry points, so we have to specify
             // which one. The `main` word of `main_entry_point` actually corresponds to the name of
             // the entry point.
-            .vertex_shader(vert_main, ())
+            .vertex_shader(vert_entry_point, ())
             // The content of the vertex buffer describes a list of triangles.
             .triangle_list()
             .viewports([
@@ -730,7 +450,7 @@ impl App {
                 },
             ].iter().cloned())
             // See `vertex_shader`.
-            .fragment_shader(frag_main, ())
+            .fragment_shader(frag_entry_point, ())
             .cull_mode_front()
             .front_face_counter_clockwise()
             .depth_stencil_disabled()
@@ -762,9 +482,7 @@ impl App {
     fn load_and_create_texture_buffer(device: Arc<Device>, queue: &Arc<Queue>)
                                       -> Result<(Arc<ImmutableImage<vulkano::format::R8G8B8A8Srgb>>, CommandBufferExecFuture<NowFuture, AutoCommandBuffer>), String>
     {
-        use vulkano::format::Format;
         use vulkano::image::Dimensions;
-        use vulkano::image::StorageImage;
         use image;
 
         let image = image::load_from_memory_with_format(include_bytes!("../resources/GroundForest003_1k/GroundForest003_COL_VAR1_1K.jpg"),
@@ -775,7 +493,7 @@ impl App {
 
         ImmutableImage::from_iter(
             image_data.iter().cloned(),
-            vulkano::image::Dimensions::Dim2d { width: width, height: height },
+            Dimensions::Dim2d { width: width, height: height },
             vulkano::format::R8G8B8A8Srgb,
             queue.clone()).map_err(|e| format!("Error creating the image: {}", e))
     }

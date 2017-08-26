@@ -4,7 +4,7 @@ extern crate image;
 extern crate vulkano;
 extern crate glfw;
 
-//pub mod shaders;
+pub mod shaders;
 //pub mod utils;
 pub mod app;
 

@@ -1,5 +1,13 @@
 mod shader;
-mod pipeline;
+//mod pipeline;
 
 pub use self::shader::Shader;
 //pub use pipeline::Pipeline;
+
+#[derive(Copy, Clone)]
+pub struct Vertex {
+    pub position: [f32; 2],
+    pub color: [f32; 3],
+}
+
+impl_vertex!(Vertex, position, color);
