@@ -1,5 +1,5 @@
 use std::borrow::Borrow;
-use std::ffi::OsStr;
+use std::borrow::Cow;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
@@ -36,14 +36,17 @@ impl Material {
             .map_err(|e| format!("Error loading image file: {} - Error: {}", path.as_ref().display(), e))?;
         let file = BufReader::new(file);
 
-        let extension = path.as_ref().extension()
+        let extension: Cow<str> = path.as_ref().extension()
             .ok_or(format!("No extension found on image file \"{}\"", path.as_ref().display()))?
             .to_string_lossy();
 
-        let image_format = match extension.borrow() {
+        let extension: &str = extension.borrow();
+        let extension = extension.to_lowercase();
+
+        let image_format = match extension.as_str() {
             "png" => image::ImageFormat::PNG,
-            "jpg" => image::ImageFormat::JPEG,
-            "tif" => image::ImageFormat::TIFF,
+            "jpg"|"jpeg" => image::ImageFormat::JPEG,
+            "tif"|"tiff" => image::ImageFormat::TIFF,
             _ => return Err(format!("\"{}\" is an unsupported image file \"{}\"!", extension, path.as_ref().display())),
         };
 
