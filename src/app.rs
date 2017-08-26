@@ -39,6 +39,7 @@ use vulkano::sync::NowFuture;
 
 use shaders::Shader;
 use shaders::Vertex;
+use shaders::Material;
 
 static ENABLE_VALIDATION_LAYERS: bool = true;
 
@@ -186,13 +187,14 @@ impl App {
         let (swapchain, images) = App::create_swap_chain(physical_device, &surface, &device, graphic_queue.clone())?;
 
         App::create_image_views()?;
+        let shader = App::create_shader(device.clone())?;
         let render_pass = App::create_render_pass(device.clone(), swapchain.clone())?;
-        let pipeline = App::create_graphics_pipeline(device.clone(), &images, render_pass.clone())?;
+        let pipeline = App::create_graphics_pipeline(device.clone(), &shader, &images, render_pass.clone())?;
         let vertex_buffer = App::create_vertex_buffer(device.clone())?;
-        let (texture, tex_future) = App::load_and_create_texture_buffer(&graphic_queue)?;
+        let material = App::load_and_create_texture_buffer(&graphic_queue, shader.clone())?;
         let framebuffers = App::create_frame_buffers(images, render_pass.clone())?;
         App::create_command_pool()?;
-        let command_buffers = App::create_command_buffers(&device, &graphic_queue, &pipeline, &vertex_buffer, &texture, &framebuffers)?;
+        let command_buffers = App::create_command_buffers(&device, &graphic_queue, &pipeline, &vertex_buffer, &material, &framebuffers)?;
         App::create_semaphores()?;
 
         Ok((vk_instance.clone(), debug_callback, surface, device, graphic_queue, swapchain, render_pass, pipeline, vertex_buffer, framebuffers, command_buffers))
@@ -370,6 +372,19 @@ impl App {
         Ok(())
     }
 
+    fn create_shader(device: Arc<Device>) -> Result<Arc<Shader>, String> {
+        // The next step is to create the shaders.
+        //
+        // The raw shader creation API provided by the vulkano library is unsafe, for various reasons.
+        //
+        // TODO: explain this in details
+        let vs_filepath = concat!(env!("OUT_DIR"), "/shader.vert.spv");
+        let fs_filepath = concat!(env!("OUT_DIR"), "/shader.frag.spv");
+
+        Shader::new(device, vs_filepath, fs_filepath)
+
+    }
+
     fn create_render_pass(device: Arc<Device>, swapchain: Arc<Swapchain>) -> Result<Arc<RenderPassAbstract + Send + Sync>, String> {
         // CREATE RENDER PASS
 
@@ -405,18 +420,9 @@ impl App {
         ).map_err(|e| format!("failed to create render pass: {}", e))?))
     }
 
-    fn create_graphics_pipeline(device: Arc<Device>, images: &Vec<Arc<SwapchainImage>>, render_pass: Arc<RenderPassAbstract + Send + Sync>)
+    fn create_graphics_pipeline(device: Arc<Device>, shader: &Arc<Shader>, images: &Vec<Arc<SwapchainImage>>, render_pass: Arc<RenderPassAbstract + Send + Sync>)
         -> Result<Arc<GraphicsPipelineAbstract + Send + Sync>, String>
     {
-        // The next step is to create the shaders.
-        //
-        // The raw shader creation API provided by the vulkano library is unsafe, for various reasons.
-        //
-        // TODO: explain this in details
-        let vs_filepath = concat!(env!("OUT_DIR"), "/shader.vert.spv");
-        let fs_filepath = concat!(env!("OUT_DIR"), "/shader.frag.spv");
-        let shader = Shader::new(device.clone(), vs_filepath, fs_filepath)?;
-
         let sub_pass = Subpass::from(render_pass, 0);
         let sub_pass = if sub_pass.is_some() {
             sub_pass.unwrap()
@@ -479,23 +485,12 @@ impl App {
         ).map_err(|e| format!("Failed to create Vertex Buffers: {}", e))
     }
 
-    fn load_and_create_texture_buffer(queue: &Arc<Queue>)
-                                      -> Result<(Arc<ImmutableImage<vulkano::format::R8G8B8A8Srgb>>, CommandBufferExecFuture<NowFuture, AutoCommandBuffer>), String>
+    fn load_and_create_texture_buffer(queue: &Arc<Queue>, shader: Arc<Shader>)
+                                      -> Result<Arc<Material>, String>
     {
-        use vulkano::image::Dimensions;
-        use image;
+        let (material, future) = Material::new(queue, shader, "resources/GroundForest003_1k/GroundForest003_COL_VAR1_1K.jpg")?;
 
-        let image = image::load_from_memory_with_format(include_bytes!("../resources/GroundForest003_1k/GroundForest003_COL_VAR1_1K.jpg"),
-                                                        image::ImageFormat::JPEG).map_err(|e| format!("Error loading image: {}", e))?.to_rgba();
-        let width = image.width();
-        let height = image.height();
-        let image_data = image.into_raw().clone();
-
-        ImmutableImage::from_iter(
-            image_data.iter().cloned(),
-            Dimensions::Dim2d { width: width, height: height },
-            vulkano::format::R8G8B8A8Srgb,
-            queue.clone()).map_err(|e| format!("Error creating the image: {}", e))
+        Ok(material)
     }
 
     fn create_frame_buffers(images: Vec<Arc<SwapchainImage>>,render_pass: Arc<RenderPassAbstract + Send + Sync>)
@@ -521,23 +516,11 @@ impl App {
                               graphic_queue: &Arc<Queue>,
                               pipeline: &Arc<GraphicsPipelineAbstract + Send + Sync>,
                               vertex_buffer: &Arc<CpuAccessibleBuffer<[Vertex]>>,
-                              texture: &Arc<ImmutableImage<vulkano::format::R8G8B8A8Srgb>>,
+                              material: &Arc<Material>,
                               framebuffers: &Vec<Arc<Framebuffer<Arc<RenderPassAbstract + Send + Sync>, ((), Arc<SwapchainImage>)>>>)
         -> Result<Vec<Arc<AutoCommandBuffer<StandardCommandPoolAlloc>>>, String>
     {
-        let sampler = vulkano::sampler::Sampler::new(device.clone(), vulkano::sampler::Filter::Linear,
-                                                     vulkano::sampler::Filter::Linear, vulkano::sampler::MipmapMode::Nearest,
-                                                     vulkano::sampler::SamplerAddressMode::ClampToEdge,
-                                                     vulkano::sampler::SamplerAddressMode::ClampToEdge,
-                                                     vulkano::sampler::SamplerAddressMode::ClampToEdge,
-                                                     0.0, 1.0, 0.0, 0.0).unwrap();
-
-        use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
-
-        let set = Arc::new(PersistentDescriptorSet::start(pipeline.clone(), 0)
-            .add_sampled_image(texture.clone(), sampler).unwrap()
-            .build().unwrap()
-        );
+        let set = material.set(device.clone(), pipeline.clone())?;
 
         Ok(framebuffers.iter()
             .map(|framebuffer|

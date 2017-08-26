@@ -24,15 +24,15 @@ pub struct Shader {
 }
 
 impl Shader {
-    pub fn new<P: AsRef<Path>>(device: Arc<Device>, vert_shader_filepath: P, frag_shader_file_path: P) -> Result<Shader, String> {
+    pub fn new<P: AsRef<Path>>(device: Arc<Device>, vert_shader_filepath: P, frag_shader_file_path: P) -> Result<Arc<Shader>, String> {
         let vert_shader_module = create_shader_module(device.clone(), vert_shader_filepath)?;
         let frag_shader_module = create_shader_module(device.clone(), frag_shader_file_path)?;
 
-        Ok(Shader {
+        Ok(Arc::new(Shader {
             device: device,
             vert_shader_module: vert_shader_module,
             frag_shader_module: frag_shader_module,
-        })
+        }))
     }
 
     pub fn entry_points(&self)
