@@ -20,7 +20,7 @@ use vulkano::framebuffer::Framebuffer;
 use vulkano::framebuffer::RenderPassAbstract;
 use vulkano::framebuffer::Subpass;
 use vulkano::image::SwapchainImage;
-use vulkano::image::immutable::ImmutableImage;
+use vulkano::image::ImmutableImage;
 use vulkano::instance::PhysicalDevice;
 use vulkano::instance::Instance;
 use vulkano::instance::InstanceExtensions;
@@ -109,7 +109,7 @@ pub struct App {
 impl App {
     pub fn new(width: u32, height: u32) -> Result<App, String> {
         let title = "Vulkan test";
-        let (mut glfw, mut window) = App::init_window(width, height, title)?;
+        let (glfw, window) = App::init_window(width, height, title)?;
         let (instance, debug_callback, surface, device, graphic_queue, swapchain, render_pass, pipeline, vertex_buffer, framebuffers, command_buffers )
             = App::init_vulkan(&glfw, &window)?;
 
@@ -136,7 +136,7 @@ impl App {
         })
     }
 
-    pub fn run(mut self) -> Result<(), String> {
+    pub fn run(self) -> Result<(), String> {
         self.main_loop()?;
 
         Ok(())
@@ -149,7 +149,7 @@ impl App {
         glfw.window_hint(glfw::WindowHint::Resizable(false));
 
         match glfw.create_window(width, height, title, glfw::WindowMode::Windowed) {
-            Some((mut window, _)) => {
+            Some((window, _)) => {
 //                window.make_current();
                 Ok((glfw, window))
             }
@@ -172,27 +172,27 @@ impl App {
             Vec<Arc<AutoCommandBuffer<StandardCommandPoolAlloc>>>,
         ), String>
     {
-        let mut vk_instance = App::create_instance(glfw)?;
+        let vk_instance = App::create_instance(glfw)?;
         let debug_callback = App::setup_debug_callback(&vk_instance)?;
-        let mut surface = App::create_surface(&vk_instance, glfw, window)?;
-        let mut physical_device = App::pick_physical_device(&vk_instance)?;
-        let (mut device, mut queues) = App::create_logical_device(physical_device, &surface)?;
+        let surface = App::create_surface(&vk_instance, window)?;
+        let physical_device = App::pick_physical_device(&vk_instance)?;
+        let (device, mut queues) = App::create_logical_device(physical_device, &surface)?;
 
         // Since we can request multiple queues, the `queues` variable is in fact an iterator. In this
         // example we use only one queue, so we just retreive the first and only element of the
         // iterator and throw it away.
         let graphic_queue = queues.next().unwrap();
 
-        let (mut swapchain, mut images) = App::create_swap_chain(window, physical_device, &surface, &device, graphic_queue.clone())?;
+        let (swapchain, images) = App::create_swap_chain(physical_device, &surface, &device, graphic_queue.clone())?;
 
         App::create_image_views()?;
-        let mut render_pass = App::create_render_pass(device.clone(), swapchain.clone())?;
-        let mut pipeline = App::create_graphics_pipeline(device.clone(), swapchain.clone(), &images, render_pass.clone())?;
-        let mut vertex_buffer = App::create_vertex_buffer(device.clone())?;
-        let (mut texture, tex_future) = App::load_and_create_texture_buffer(device.clone(), &graphic_queue)?;
-        let mut framebuffers = App::create_frame_buffers(images, render_pass.clone())?;
+        let render_pass = App::create_render_pass(device.clone(), swapchain.clone())?;
+        let pipeline = App::create_graphics_pipeline(device.clone(), &images, render_pass.clone())?;
+        let vertex_buffer = App::create_vertex_buffer(device.clone())?;
+        let (texture, tex_future) = App::load_and_create_texture_buffer(&graphic_queue)?;
+        let framebuffers = App::create_frame_buffers(images, render_pass.clone())?;
         App::create_command_pool()?;
-        let mut command_buffers = App::create_command_buffers(&device, &graphic_queue, &pipeline, &vertex_buffer, &texture, &framebuffers)?;
+        let command_buffers = App::create_command_buffers(&device, &graphic_queue, &pipeline, &vertex_buffer, &texture, &framebuffers)?;
         App::create_semaphores()?;
 
         Ok((vk_instance.clone(), debug_callback, surface, device, graphic_queue, swapchain, render_pass, pipeline, vertex_buffer, framebuffers, command_buffers))
@@ -227,7 +227,7 @@ impl App {
         Ok(Some(_callback))
     }
 
-    fn create_surface(vk_instance: &Arc<Instance>, glfw: &Glfw, window: &Window) -> Result<Arc<Surface>, String> {
+    fn create_surface(vk_instance: &Arc<Instance>, window: &Window) -> Result<Arc<Surface>, String> {
         use vulkano::VulkanObject;
 
         let mut _surface: u64 = 0;
@@ -263,7 +263,7 @@ impl App {
             if dev.ty() == PhysicalDeviceType::Other { other_physical = Some(dev); }
         };
 
-        let mut physical;
+        let physical;
 
         if discrete_physical.is_some() {
             physical = discrete_physical.unwrap();
@@ -339,7 +339,7 @@ impl App {
             .map_err(|e| format!("failed to create device: {}", e))
     }
 
-    fn create_swap_chain(window: &Window, physical_device: PhysicalDevice, surface: &Arc<Surface>, device: &Arc<Device>, queue: Arc<Queue>)
+    fn create_swap_chain(physical_device: PhysicalDevice, surface: &Arc<Surface>, device: &Arc<Device>, queue: Arc<Queue>)
         -> Result<(Arc<Swapchain>, Vec<Arc<SwapchainImage>>), String>
     {
         // Querying the capabilities of the surface. When we create the swapchain we can only
@@ -405,7 +405,7 @@ impl App {
         ).map_err(|e| format!("failed to create render pass: {}", e))?))
     }
 
-    fn create_graphics_pipeline(device: Arc<Device>, swapchain: Arc<Swapchain>, images: &Vec<Arc<SwapchainImage>>, render_pass: Arc<RenderPassAbstract + Send + Sync>)
+    fn create_graphics_pipeline(device: Arc<Device>, images: &Vec<Arc<SwapchainImage>>, render_pass: Arc<RenderPassAbstract + Send + Sync>)
         -> Result<Arc<GraphicsPipelineAbstract + Send + Sync>, String>
     {
         // The next step is to create the shaders.
@@ -415,7 +415,7 @@ impl App {
         // TODO: explain this in details
         let vs_filepath = concat!(env!("OUT_DIR"), "/shader.vert.spv");
         let fs_filepath = concat!(env!("OUT_DIR"), "/shader.frag.spv");
-        let mut shader = Shader::new(device.clone(), vs_filepath, fs_filepath)?;
+        let shader = Shader::new(device.clone(), vs_filepath, fs_filepath)?;
 
         let sub_pass = Subpass::from(render_pass, 0);
         let sub_pass = if sub_pass.is_some() {
@@ -479,7 +479,7 @@ impl App {
         ).map_err(|e| format!("Failed to create Vertex Buffers: {}", e))
     }
 
-    fn load_and_create_texture_buffer(device: Arc<Device>, queue: &Arc<Queue>)
+    fn load_and_create_texture_buffer(queue: &Arc<Queue>)
                                       -> Result<(Arc<ImmutableImage<vulkano::format::R8G8B8A8Srgb>>, CommandBufferExecFuture<NowFuture, AutoCommandBuffer>), String>
     {
         use vulkano::image::Dimensions;

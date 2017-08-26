@@ -1,7 +1,9 @@
 mod shader;
+mod material;
 //mod pipeline;
 
 pub use self::shader::Shader;
+pub use self::material::Material;
 //pub use pipeline::Pipeline;
 
 #[derive(Copy, Clone)]

@@ -17,8 +17,6 @@ use vulkano::pipeline::shader::GraphicsEntryPoint;
 use vulkano::pipeline::shader::ShaderModule;
 use vulkano::pipeline::shader::{ShaderInterfaceDef, ShaderInterfaceDefEntry};
 
-use shaders::Vertex;
-
 pub struct Shader {
     device: Arc<Device>,
     vert_shader_module: Arc<ShaderModule>,
