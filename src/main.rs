@@ -1,3 +1,5 @@
+extern crate image;
+
 #[macro_use]
 extern crate vulkano;
 extern crate glfw;
@@ -5,7 +7,6 @@ extern crate glfw;
 //pub mod shaders;
 //pub mod utils;
 pub mod app;
-use std::env;
 
 
 

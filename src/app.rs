@@ -16,6 +16,7 @@ use vulkano::buffer::cpu_access::CpuAccessibleBuffer;
 use vulkano::command_buffer::AutoCommandBufferBuilder;
 use vulkano::command_buffer::AutoCommandBuffer;
 use vulkano::command_buffer::DynamicState;
+use vulkano::command_buffer::CommandBufferExecFuture;
 use vulkano::command_buffer::pool::standard::StandardCommandPoolAlloc;
 use vulkano::descriptor::descriptor::ShaderStages;
 use vulkano::descriptor::descriptor::DescriptorDesc;
@@ -28,6 +29,7 @@ use vulkano::framebuffer::Framebuffer;
 use vulkano::framebuffer::RenderPassAbstract;
 use vulkano::framebuffer::Subpass;
 use vulkano::image::SwapchainImage;
+use vulkano::image::immutable::ImmutableImage;
 use vulkano::instance::PhysicalDevice;
 use vulkano::instance::Instance;
 use vulkano::instance::InstanceExtensions;
@@ -45,6 +47,7 @@ use vulkano::swapchain::Swapchain;
 use vulkano::swapchain::SurfaceTransform;
 use vulkano::swapchain::PresentMode;
 use vulkano::sync::GpuFuture;
+use vulkano::sync::NowFuture;
 
 static ENABLE_VALIDATION_LAYERS: bool = true;
 
@@ -203,9 +206,10 @@ impl App {
         let mut render_pass = App::create_render_pass(device.clone(), swapchain.clone())?;
         let mut pipeline = App::create_graphics_pipeline(device.clone(), swapchain.clone(), &images, render_pass.clone())?;
         let mut vertex_buffer = App::create_vertex_buffer(device.clone())?;
+        let (mut texture, tex_future) = App::load_and_create_texture_buffer(device.clone(), &graphic_queue)?;
         let mut framebuffers = App::create_frame_buffers(images, render_pass.clone())?;
         App::create_command_pool()?;
-        let mut command_buffers = App::create_command_buffers(&device, &graphic_queue, &pipeline, &vertex_buffer, &framebuffers)?;
+        let mut command_buffers = App::create_command_buffers(&device, &graphic_queue, &pipeline, &vertex_buffer, &texture, &framebuffers)?;
         App::create_semaphores()?;
 
         Ok((vk_instance.clone(), debug_callback, surface, device, graphic_queue, swapchain, render_pass, pipeline, vertex_buffer, framebuffers, command_buffers))
@@ -635,7 +639,33 @@ impl App {
                 match set { 0 => Some(1), _ => None, }
             }
             fn descriptor(&self, set: usize, binding: usize) -> Option<DescriptorDesc> {
-                match (set, binding) { _ => None, }
+                use vulkano::descriptor::descriptor::{DescriptorDescTy, ShaderStages, DescriptorImageDesc, DescriptorImageDescDimensions, DescriptorImageDescArray};
+                use vulkano::format::Format;
+
+                match (set, binding) {
+                    (0, 0) => Some(DescriptorDesc {
+                        ty: DescriptorDescTy::CombinedImageSampler({
+                            DescriptorImageDesc {
+                                sampled: true,
+                                dimensions: DescriptorImageDescDimensions::TwoDimensional,
+                                format: Some(Format::R8G8B8A8Srgb),
+                                multisampled: false,
+                                array_layers: DescriptorImageDescArray::NonArrayed,
+                            }
+                        }),
+                        array_count: 1,
+                        stages: ShaderStages {
+                            vertex: false,
+                            tessellation_control: false,
+                            tessellation_evaluation: false,
+                            geometry: false,
+                            fragment: true,
+                            compute: false,
+                        },
+                        readonly: true,
+                    }),
+                    _ => None,
+                }
             }
             fn num_push_constants_ranges(&self) -> usize { 0 }
             fn push_constants_range(&self, num: usize) -> Option<PipelineLayoutDescPcRange> {
@@ -719,11 +749,35 @@ impl App {
             device,
             BufferUsage::all(),
             [
-                Vertex { position: [-1.0,  1.0], color: [1.0, 0.0, 0.0] },
-                Vertex { position: [ 0.0, -1.0], color: [0.0, 1.0, 0.0] },
+                Vertex { position: [-1.0, -1.0], color: [1.0, 0.0, 0.0] },
+                Vertex { position: [ 1.0, -1.0], color: [0.0, 1.0, 0.0] },
                 Vertex { position: [ 1.0,  1.0], color: [0.0, 0.0, 1.0] },
+                Vertex { position: [-1.0, -1.0], color: [1.0, 0.0, 0.0] },
+                Vertex { position: [ 1.0,  1.0], color: [0.0, 0.0, 1.0] },
+                Vertex { position: [-1.0,  1.0], color: [0.0, 1.0, 0.0] },
             ].iter().cloned()
         ).map_err(|e| format!("Failed to create Vertex Buffers: {}", e))
+    }
+
+    fn load_and_create_texture_buffer(device: Arc<Device>, queue: &Arc<Queue>)
+                                      -> Result<(Arc<ImmutableImage<vulkano::format::R8G8B8A8Srgb>>, CommandBufferExecFuture<NowFuture, AutoCommandBuffer>), String>
+    {
+        use vulkano::format::Format;
+        use vulkano::image::Dimensions;
+        use vulkano::image::StorageImage;
+        use image;
+
+        let image = image::load_from_memory_with_format(include_bytes!("../resources/GroundForest003_1k/GroundForest003_COL_VAR1_1K.jpg"),
+                                                        image::ImageFormat::JPEG).map_err(|e| format!("Error loading image: {}", e))?.to_rgba();
+        let width = image.width();
+        let height = image.height();
+        let image_data = image.into_raw().clone();
+
+        ImmutableImage::from_iter(
+            image_data.iter().cloned(),
+            vulkano::image::Dimensions::Dim2d { width: width, height: height },
+            vulkano::format::R8G8B8A8Srgb,
+            queue.clone()).map_err(|e| format!("Error creating the image: {}", e))
     }
 
     fn create_frame_buffers(images: Vec<Arc<SwapchainImage>>,render_pass: Arc<RenderPassAbstract + Send + Sync>)
@@ -749,9 +803,24 @@ impl App {
                               graphic_queue: &Arc<Queue>,
                               pipeline: &Arc<GraphicsPipelineAbstract + Send + Sync>,
                               vertex_buffer: &Arc<CpuAccessibleBuffer<[Vertex]>>,
+                              texture: &Arc<ImmutableImage<vulkano::format::R8G8B8A8Srgb>>,
                               framebuffers: &Vec<Arc<Framebuffer<Arc<RenderPassAbstract + Send + Sync>, ((), Arc<SwapchainImage>)>>>)
         -> Result<Vec<Arc<AutoCommandBuffer<StandardCommandPoolAlloc>>>, String>
     {
+        let sampler = vulkano::sampler::Sampler::new(device.clone(), vulkano::sampler::Filter::Linear,
+                                                     vulkano::sampler::Filter::Linear, vulkano::sampler::MipmapMode::Nearest,
+                                                     vulkano::sampler::SamplerAddressMode::ClampToEdge,
+                                                     vulkano::sampler::SamplerAddressMode::ClampToEdge,
+                                                     vulkano::sampler::SamplerAddressMode::ClampToEdge,
+                                                     0.0, 1.0, 0.0, 0.0).unwrap();
+
+        use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
+
+        let set = Arc::new(PersistentDescriptorSet::start(pipeline.clone(), 0)
+            .add_sampled_image(texture.clone(), sampler).unwrap()
+            .build().unwrap()
+        );
+
         Ok(framebuffers.iter()
             .map(|framebuffer|
                 Arc::new(AutoCommandBufferBuilder::new(
@@ -767,7 +836,7 @@ impl App {
                     pipeline.clone(),
                     DynamicState::none(),
                     vec![vertex_buffer.clone()],
-                    (),
+                    set.clone(),
                     (),
                 ).unwrap()
                 .end_render_pass().unwrap()

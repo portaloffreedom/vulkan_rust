@@ -5,6 +5,7 @@ authors = ["Matteo De Carlo <matteo.dek@gmail.com>"]
 build = "build.rs"
 
 [dependencies]
+image = "0.15.0"
 
 [dependencies.vulkano]
 version = "0.6.0"
