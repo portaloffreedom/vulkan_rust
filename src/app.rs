@@ -522,27 +522,38 @@ impl App {
     {
         let set = material.set(device.clone(), pipeline.clone())?;
 
-        Ok(framebuffers.iter()
-            .map(|framebuffer|
-                Arc::new(AutoCommandBufferBuilder::new(
-                    device.clone(),
-                    graphic_queue.family(),
-                ).unwrap()
-                .begin_render_pass(
-                    framebuffer.clone(),
-                    false,
-                    vec![[0.0, 0.0, 0.0, 1.0].into(), 1.0.into()],
-                ).unwrap()
-                .draw(
-                    pipeline.clone(),
-                    DynamicState::none(),
-                    vec![vertex_buffer.clone()],
-                    set.clone(),
-                    (),
-                ).unwrap()
-                .end_render_pass().unwrap()
-                .build().unwrap())
-            ).collect())
+        let command_buffers: Result<Vec<Arc<_>>, String> = framebuffers.iter()
+            .map(|framebuffer| {
+                let command_buffer: AutoCommandBuffer<StandardCommandPoolAlloc> = AutoCommandBufferBuilder::new
+                    (
+                        device.clone(),
+                        graphic_queue.family(),
+                    )
+                    .map_err(|e| format!("Error creating AutoCommandBufferBuilder: {}", e))?
+                    .begin_render_pass(
+                        framebuffer.clone(),
+                        false,
+                        vec![[0.0, 0.0, 0.0, 1.0].into(), 1.0.into()],
+                    )
+                    .map_err(|e| format!("Error beginning render_pass build: {}", e))?
+                    .draw(
+                        pipeline.clone(),
+                        DynamicState::none(),
+                        vec![vertex_buffer.clone()],
+                        set.clone(),
+                        (),
+                    )
+                    .map_err(|e| format!("Error adding draw to render pass: {}", e))?
+                    .end_render_pass()
+                    .map_err(|e| format!("Error ending render pass build: {}", e))?
+                    .build()
+                    .map_err(|e| format!("Error building render pass: {}", e))?;
+
+                Ok(Arc::new(command_buffer))
+            })
+            .collect();
+
+        command_buffers
     }
 
     fn create_semaphores() -> Result<(), String> {
@@ -560,7 +571,6 @@ impl App {
     }
 
     fn draw_frame(&self) {
-//        println!("New Frame!");
         let (image_num, acquire_future) = vulkano::swapchain::acquire_next_image(
             self.vk_swapchain.clone(),
             None,
