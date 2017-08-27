@@ -1,10 +1,20 @@
+use std::ops::Deref;
 use std::ptr;
 use std::sync::Arc;
+use std::f32::consts::FRAC_PI_2;
+
+use cgmath;
+use cgmath::{Vector2,Vector3,Vector4};
+use cgmath::{Matrix2,Matrix3,Matrix4};
 
 use glfw;
 use glfw::Glfw;
 use glfw::Context;
 use glfw::Window;
+
+use shaders::Shader;
+use shaders::Vertex;
+use shaders::Material;
 
 use vulkano;
 use vulkano::buffer::BufferUsage;
@@ -14,6 +24,9 @@ use vulkano::command_buffer::AutoCommandBuffer;
 use vulkano::command_buffer::DynamicState;
 use vulkano::command_buffer::CommandBufferExecFuture;
 use vulkano::command_buffer::pool::standard::StandardCommandPoolAlloc;
+use vulkano::descriptor::DescriptorSet;
+use vulkano::descriptor::descriptor_set::DescriptorSetsCollection;
+use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
 use vulkano::device::Device;
 use vulkano::device::{Queue, QueuesIter};
 use vulkano::framebuffer::Framebuffer;
@@ -21,6 +34,7 @@ use vulkano::framebuffer::RenderPassAbstract;
 use vulkano::framebuffer::Subpass;
 use vulkano::image::SwapchainImage;
 use vulkano::image::ImmutableImage;
+use vulkano::image::AttachmentImage;
 use vulkano::instance::PhysicalDevice;
 use vulkano::instance::Instance;
 use vulkano::instance::InstanceExtensions;
@@ -37,11 +51,29 @@ use vulkano::swapchain::PresentMode;
 use vulkano::sync::GpuFuture;
 use vulkano::sync::NowFuture;
 
-use shaders::Shader;
-use shaders::Vertex;
-use shaders::Material;
-
 static ENABLE_VALIDATION_LAYERS: bool = true;
+
+struct ModelViewProj_uniform {
+    model: [[f32; 4]; 4], //Matrix4<f32>,
+    view: [[f32; 4]; 4], //Matrix4<f32>,
+    proj: [[f32; 4]; 4], //Matrix4<f32>,
+}
+
+struct ModelViewProj {
+    model: Matrix4<f32>,
+    view: Matrix4<f32>,
+    proj: Matrix4<f32>,
+}
+
+impl ModelViewProj {
+    pub fn uniform_data(&self) -> ModelViewProj_uniform {
+        ModelViewProj_uniform {
+            model: Matrix4::from(self.model).into(),
+            view: self.view.into(),
+            proj: self.proj.into(),
+        }
+    }
+}
 
 fn required_extensions(glfw: &Glfw) -> InstanceExtensions {
     let mut ideal = InstanceExtensions {
@@ -101,6 +133,7 @@ pub struct App {
     vertex_buffer: Arc<CpuAccessibleBuffer<[Vertex]>>,
     framebuffers: Vec<Arc<Framebuffer<Arc<RenderPassAbstract + Send + Sync>, ((), Arc<SwapchainImage>)>>>,
     command_buffers: Vec<Arc<AutoCommandBuffer<StandardCommandPoolAlloc>>>,
+    model_view_proj: ModelViewProj,
 //    vk_physical_device: PhysicalDevice,
 //    validation_layers: Vec<& 'static str>,
 //    device_extensions: Vec<DeviceExtensions>,
@@ -111,7 +144,7 @@ impl App {
     pub fn new(width: u32, height: u32) -> Result<App, String> {
         let title = "Vulkan test";
         let (glfw, window) = App::init_window(width, height, title)?;
-        let (instance, debug_callback, surface, device, graphic_queue, swapchain, render_pass, pipeline, vertex_buffer, framebuffers, command_buffers )
+        let (instance, debug_callback, surface, device, graphic_queue, swapchain, render_pass, pipeline, vertex_buffer, framebuffers, command_buffers, model_view_proj )
             = App::init_vulkan(&glfw, &window)?;
 
         Ok(App {
@@ -131,6 +164,7 @@ impl App {
             vertex_buffer: vertex_buffer,
             framebuffers: framebuffers,
             command_buffers: command_buffers,
+            model_view_proj: model_view_proj,
 //            vk_physical_device: physical_device,
 //            validation_layers: vec!["VK_LAYER_LUNARG_standard_validation"],
 //            device_extensions: vec![DeviceExtensions.khr_swapchain],
@@ -171,12 +205,24 @@ impl App {
             Arc<CpuAccessibleBuffer<[Vertex]>>,
             Vec<Arc<Framebuffer<Arc<RenderPassAbstract + Send + Sync>, ((), Arc<SwapchainImage>)>>>,
             Vec<Arc<AutoCommandBuffer<StandardCommandPoolAlloc>>>,
+            ModelViewProj,
         ), String>
     {
         let vk_instance = App::create_instance(glfw)?;
         let debug_callback = App::setup_debug_callback(&vk_instance)?;
         let surface = App::create_surface(&vk_instance, window)?;
         let physical_device = App::pick_physical_device(&vk_instance)?;
+
+        // Querying the capabilities of the surface. When we create the swapchain we can only
+        // pass values that are allowed by the capabilities.
+        let caps = surface.capabilities(physical_device)
+            .map_err(|e| format!("failed to get surface capabilities: {}", e))?;
+
+        // We choose the dimensions of the swapchain to match the current dimensions of the window.
+        // If `caps.current_extent` is `None`, this means that the window size will be determined
+        // by the dimensions of the swapchain, in which case we just use the width and height defined above.
+        let dimensions = caps.current_extent.unwrap_or([800, 600]); //TODO this 800, 600 are bad hardcoded values
+
         let (device, mut queues) = App::create_logical_device(physical_device, &surface)?;
 
         // Since we can request multiple queues, the `queues` variable is in fact an iterator. In this
@@ -184,20 +230,21 @@ impl App {
         // iterator and throw it away.
         let graphic_queue = queues.next().unwrap();
 
-        let (swapchain, images) = App::create_swap_chain(physical_device, &surface, &device, graphic_queue.clone())?;
+        let (swapchain, images, depth_buffer) = App::create_swap_chain(physical_device, &surface, &device, graphic_queue.clone(), &caps, dimensions)?;
 
         App::create_image_views()?;
         let shader = App::create_shader(device.clone())?;
         let render_pass = App::create_render_pass(device.clone(), swapchain.clone())?;
         let pipeline = App::create_graphics_pipeline(device.clone(), &shader, &images, render_pass.clone())?;
+        let (mod_view_proj_set , model_view_proj) = App::create_descriptor_set_layout(device.clone(), pipeline.clone())?;
         let vertex_buffer = App::create_vertex_buffer(device.clone())?;
         let material = App::load_and_create_texture_buffer(&graphic_queue, shader.clone())?;
         let framebuffers = App::create_frame_buffers(images, render_pass.clone())?;
         App::create_command_pool()?;
-        let command_buffers = App::create_command_buffers(&device, &graphic_queue, &pipeline, &vertex_buffer, &material, &framebuffers)?;
+        let command_buffers = App::create_command_buffers(&device, &graphic_queue, &pipeline, &vertex_buffer, &material, &mod_view_proj_set, &framebuffers)?;
         App::create_semaphores()?;
 
-        Ok((vk_instance.clone(), debug_callback, surface, device, graphic_queue, swapchain, render_pass, pipeline, vertex_buffer, framebuffers, command_buffers))
+        Ok((vk_instance.clone(), debug_callback, surface, device, graphic_queue, swapchain, render_pass, pipeline, vertex_buffer, framebuffers, command_buffers, model_view_proj))
     }
 
     fn create_instance(glfw: &Glfw) -> Result<Arc<Instance>, String> {
@@ -209,8 +256,14 @@ impl App {
             // required to draw to a window.
             let extensions = required_extensions(glfw);
 
+            let layer_validation = "VK_LAYER_LUNARG_standard_validation";
+            let mut layers = vec![];
+            if ENABLE_VALIDATION_LAYERS {
+                layers.push(&layer_validation);
+            }
+
             // Now creating the instance.
-            Instance::new(None, &extensions, None)
+            Instance::new(None, &extensions, layers)
                 .map_err(|e| format!("failed to create Vulkan instance: {}", e))?
         };
 
@@ -341,31 +394,27 @@ impl App {
             .map_err(|e| format!("failed to create device: {}", e))
     }
 
-    fn create_swap_chain(physical_device: PhysicalDevice, surface: &Arc<Surface>, device: &Arc<Device>, queue: Arc<Queue>)
-        -> Result<(Arc<Swapchain>, Vec<Arc<SwapchainImage>>), String>
+    fn create_swap_chain(physical_device: PhysicalDevice, surface: &Arc<Surface>, device: &Arc<Device>, queue: Arc<Queue>, capabilities: &vulkano::swapchain::Capabilities, dimensions: [u32; 2])
+        -> Result<(Arc<Swapchain>, Vec<Arc<SwapchainImage>>, Arc<AttachmentImage<vulkano::format::D16Unorm>>), String>
     {
-        // Querying the capabilities of the surface. When we create the swapchain we can only
-        // pass values that are allowed by the capabilities.
-        let caps = surface.capabilities(physical_device)
-            .expect("failed to get surface capabilities");
-
-        // We choose the dimensions of the swapchain to match the current dimensions of the window.
-        // If `caps.current_extent` is `None`, this means that the window size will be determined
-        // by the dimensions of the swapchain, in which case we just use the width and height defined above.
-        let dimensions = caps.current_extent.unwrap_or([800, 600]);
 
         // The alpha mode indicates how the alpha value of the final image will behave. For example
         // you can choose whether the window will be opaque or transparent.
-        let alpha = caps.supported_composite_alpha.iter().next().unwrap();
+        let alpha = capabilities.supported_composite_alpha.iter().next().unwrap();
 
         // Choosing the internal format that the images will have.
-        let format = caps.supported_formats[0].0;
+        let format = capabilities.supported_formats[0].0;
+
+        let depth_buffer = AttachmentImage::transient(device.clone(), dimensions, vulkano::format::D16Unorm)
+            .map_err(|e| format!("Error creating depth buffer: {}", e))?;
 
         // Please take a look at the docs for the meaning of the parameters we didn't mention.
-        Swapchain::new(device.clone(), surface.clone(), caps.min_image_count, format,
-                       dimensions, 1, caps.supported_usage_flags, &queue,
-                       SurfaceTransform::Identity, alpha, PresentMode::Fifo, true,
-                       None).map_err(|e| format!("failed to create swapchain: {}", e))
+        let (swapchain, images) = Swapchain::new(device.clone(), surface.clone(), capabilities.min_image_count, format,
+                       dimensions, 1, capabilities.supported_usage_flags, &queue,
+                       SurfaceTransform::Identity, alpha, PresentMode::Relaxed, true,
+                       None).map_err(|e| format!("failed to create swapchain: {}", e))?;
+
+        Ok((swapchain, images, depth_buffer))
     }
 
     fn create_image_views() -> Result<(), String> {
@@ -418,6 +467,43 @@ impl App {
                 depth_stencil: {}
             }
         ).map_err(|e| format!("failed to create render pass: {}", e))?))
+    }
+
+    fn create_descriptor_set_layout(device: Arc<Device>, pipeline: Arc<GraphicsPipelineAbstract + Send + Sync>)
+                                    -> Result<(Arc<DescriptorSet + Send + Sync>, ModelViewProj), String>
+    {
+        let uniform_buffer = vulkano::buffer::cpu_pool::CpuBufferPool::<ModelViewProj_uniform>
+        ::new(device.clone(), vulkano::buffer::BufferUsage::all());
+
+        let proj = cgmath::perspective(cgmath::Rad(FRAC_PI_2), { 800 as f32 / 600 as f32 }, 0.01, 100.0);
+        let view = Matrix4::look_at(cgmath::Point3::new(0.3, 0.3, 1.0), cgmath::Point3::new(0.0, 0.0, 0.0), cgmath::Vector3::new(0.0, -1.0, 0.0));
+        let scale = Matrix4::from_scale(0.01);
+
+        use cgmath::SquareMatrix;
+        let mut model_view_proj = ModelViewProj {
+            proj: proj,
+            view: view * scale,
+            model: Matrix4::identity(),
+        };
+
+        let uniform_data_subbuffer = {
+            let elapsed = 0;
+            let rotation = 1.0_f64;
+            let rotation = cgmath::Matrix3::from_angle_y(cgmath::Rad(rotation as f32));
+
+            model_view_proj.model = model_view_proj.model * Matrix4::from(rotation);
+
+            let uniform_data = model_view_proj.uniform_data();
+            uniform_buffer.next(uniform_data)
+        };
+
+        let set = PersistentDescriptorSet::start(pipeline, 0)
+            .add_buffer(uniform_data_subbuffer)
+            .map_err(|e| format!("Error adding ModelViewProj_uniform buffer to set: {}", e))?
+            .build()
+            .map_err(|e| format!("Error building persistent set for ModelViewProj_uniform: {}", e))?;
+
+        Ok((Arc::new(set), model_view_proj))
     }
 
     fn create_graphics_pipeline(device: Arc<Device>, shader: &Arc<Shader>, images: &Vec<Arc<SwapchainImage>>, render_pass: Arc<RenderPassAbstract + Send + Sync>)
@@ -475,12 +561,12 @@ impl App {
             device,
             BufferUsage::all(),
             [
-                Vertex { position: [-1.0, -1.0], color: [1.0, 0.0, 0.0] },
-                Vertex { position: [ 1.0, -1.0], color: [0.0, 1.0, 0.0] },
-                Vertex { position: [ 1.0,  1.0], color: [0.0, 0.0, 1.0] },
-                Vertex { position: [-1.0, -1.0], color: [1.0, 0.0, 0.0] },
-                Vertex { position: [ 1.0,  1.0], color: [0.0, 0.0, 1.0] },
-                Vertex { position: [-1.0,  1.0], color: [0.0, 1.0, 0.0] },
+                Vertex { position: [-100.0, -100.0], texture_coordinate: [-1.0, -1.0], color: [1.0, 0.0, 0.0] },
+                Vertex { position: [ 100.0, -100.0], texture_coordinate: [ 1.0, -1.0], color: [0.0, 1.0, 0.0] },
+                Vertex { position: [ 100.0,  100.0], texture_coordinate: [ 1.0,  1.0], color: [0.0, 0.0, 1.0] },
+                Vertex { position: [-100.0, -100.0], texture_coordinate: [-1.0, -1.0], color: [1.0, 0.0, 0.0] },
+                Vertex { position: [ 100.0,  100.0], texture_coordinate: [ 1.0,  1.0], color: [0.0, 0.0, 1.0] },
+                Vertex { position: [-100.0,  100.0], texture_coordinate: [-1.0,  1.0], color: [0.0, 1.0, 0.0] },
             ].iter().cloned()
         ).map_err(|e| format!("Failed to create Vertex Buffers: {}", e))
     }
@@ -517,10 +603,11 @@ impl App {
                               pipeline: &Arc<GraphicsPipelineAbstract + Send + Sync>,
                               vertex_buffer: &Arc<CpuAccessibleBuffer<[Vertex]>>,
                               material: &Arc<Material>,
+                              modelviewsets: &Arc<DescriptorSet + Send + Sync>,
                               framebuffers: &Vec<Arc<Framebuffer<Arc<RenderPassAbstract + Send + Sync>, ((), Arc<SwapchainImage>)>>>)
         -> Result<Vec<Arc<AutoCommandBuffer<StandardCommandPoolAlloc>>>, String>
     {
-        let set = material.set(device.clone(), pipeline.clone())?;
+        let texture_set = material.set(device.clone(), pipeline.clone())?;
 
         let command_buffers: Result<Vec<Arc<_>>, String> = framebuffers.iter()
             .map(|framebuffer| {
@@ -540,7 +627,7 @@ impl App {
                         pipeline.clone(),
                         DynamicState::none(),
                         vec![vertex_buffer.clone()],
-                        set.clone(),
+                        (modelviewsets.clone(), texture_set.clone()),
                         (),
                     )
                     .map_err(|e| format!("Error adding draw to render pass: {}", e))?
@@ -562,9 +649,24 @@ impl App {
 
 
     fn main_loop(mut self) -> Result<(), String> {
+        use std::time::Instant;
+        let start_timer = Instant::now();
+
         while !self.window.should_close() {
+            let now = Instant::now();
+
+            let elapsed = start_timer.elapsed();
+            let rotation = elapsed.as_secs() as f64 + elapsed.subsec_nanos() as f64 / 1_000_000_000.0;
+            let rotation = cgmath::Matrix3::from_angle_y(cgmath::Rad(rotation as f32));
+
+            self.model_view_proj.model = self.model_view_proj.model * Matrix4::from(rotation);
+
             self.glfw.poll_events();
             self.draw_frame();
+
+            let elapsed = now.elapsed();
+            let ms = (elapsed.as_secs() as f64) + (elapsed.subsec_nanos() as f64 / 1000_000.0);
+            println!("ms: {}", ms);
         }
 
         Ok(())
@@ -581,5 +683,6 @@ impl App {
             .then_swapchain_present(self.vk_graphic_queue.clone(), self.vk_swapchain.clone(), image_num)
             .then_signal_fence_and_flush().unwrap()
             .wait(None).unwrap();
+
     }
 }

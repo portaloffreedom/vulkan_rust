@@ -6,11 +6,16 @@ build = "build.rs"
 
 [dependencies]
 image = "0.15.0"
+cgmath = "0.15.0"
+
+#[dependencies.vek]
+#version = "0.2.2"
+#features = ["adjust features for slow compiling time"]
 
 [dependencies.vulkano]
 version = "0.6.0"
-git = "https://github.com/portaloffreedom/vulkano.git"
-#path = "../vulkano/vulkano"
+#git = "https://github.com/portaloffreedom/vulkano.git"
+path = "../vulkano/vulkano"
 
 [dependencies.glfw]
 version = "0.16.0"

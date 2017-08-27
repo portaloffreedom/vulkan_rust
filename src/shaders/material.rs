@@ -91,7 +91,7 @@ impl Material {
     {
         let sampler = self.sampler(device)?;
 
-        let set = PersistentDescriptorSet::start(pipeline, 0)
+        let set = PersistentDescriptorSet::start(pipeline, 1)
             .add_sampled_image(self.texture.clone(), sampler)
             .map_err(|e| format!("Error adding image to material set: {}", e))?
             .build()

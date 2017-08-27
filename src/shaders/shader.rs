@@ -179,17 +179,37 @@ pub struct VertLayout(ShaderStages);
 
 unsafe impl PipelineLayoutDesc for VertLayout {
     // Number of descriptor sets it takes.
-    fn num_sets(&self) -> usize { 1 }
+    fn num_sets(&self) -> usize { 2 }
     // Number of entries (bindings) in each set.
     fn num_bindings_in_set(&self, set: usize) -> Option<usize> {
         match set {
             0 => Some(1),
+            1 => Some(1),
             _ => None,
         }
     }
     // Descriptor descriptions.
     fn descriptor(&self, set: usize, binding: usize) -> Option<DescriptorDesc> {
-        match (set, binding) { _ => None, }
+        use vulkano::descriptor::descriptor::{DescriptorDescTy, ShaderStages, DescriptorImageDesc, DescriptorImageDescDimensions, DescriptorImageDescArray, DescriptorBufferDesc};
+        use vulkano::format::Format;
+
+        match (set, binding) {
+            (0, 0) => Some(DescriptorDesc {
+                ty: DescriptorDescTy::Buffer(
+                    DescriptorBufferDesc {
+                        dynamic: Some(false),
+                        storage: false,
+                    }
+                ),
+                array_count: 1,
+                stages: ShaderStages {
+                    vertex: true,
+                    .. ShaderStages::none()
+                },
+                readonly: true,
+            }),
+            _ => None,
+        }
     }
     // Number of push constants ranges (think: number of push constants).
     fn num_push_constants_ranges(&self) -> usize { 0 }
@@ -287,19 +307,20 @@ impl ExactSizeIterator for FragOutputIter {}
 pub struct FragLayout(ShaderStages);
 
 unsafe impl PipelineLayoutDesc for FragLayout {
-    fn num_sets(&self) -> usize { 1 }
+    fn num_sets(&self) -> usize { 2 }
     fn num_bindings_in_set(&self, set: usize) -> Option<usize> {
         match set {
             0 => Some(1),
+            1 => Some(1),
             _ => None,
         }
     }
     fn descriptor(&self, set: usize, binding: usize) -> Option<DescriptorDesc> {
-        use vulkano::descriptor::descriptor::{DescriptorDescTy, ShaderStages, DescriptorImageDesc, DescriptorImageDescDimensions, DescriptorImageDescArray};
+        use vulkano::descriptor::descriptor::{DescriptorDescTy, ShaderStages, DescriptorImageDesc, DescriptorImageDescDimensions, DescriptorImageDescArray, DescriptorBufferDesc};
         use vulkano::format::Format;
 
         match (set, binding) {
-            (0, 0) => Some(DescriptorDesc {
+            (1, 0) => Some(DescriptorDesc {
                 ty: DescriptorDescTy::CombinedImageSampler({
                     DescriptorImageDesc {
                         sampled: true,
@@ -311,12 +332,8 @@ unsafe impl PipelineLayoutDesc for FragLayout {
                 }),
                 array_count: 1,
                 stages: ShaderStages {
-                    vertex: false,
-                    tessellation_control: false,
-                    tessellation_evaluation: false,
-                    geometry: false,
                     fragment: true,
-                    compute: false,
+                    .. ShaderStages::none()
                 },
                 readonly: true,
             }),
