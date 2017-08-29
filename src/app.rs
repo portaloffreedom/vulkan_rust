@@ -1,4 +1,5 @@
 use std::ops::Deref;
+use std::time::Instant;
 use std::ptr;
 use std::sync::Arc;
 use std::f32::consts::FRAC_PI_2;
@@ -18,7 +19,9 @@ use shaders::Material;
 
 use vulkano;
 use vulkano::buffer::BufferUsage;
-use vulkano::buffer::cpu_access::CpuAccessibleBuffer;
+use vulkano::buffer::CpuBufferPool;
+use vulkano::buffer::cpu_pool::CpuBufferPoolSubbuffer;
+use vulkano::buffer::CpuAccessibleBuffer;
 use vulkano::command_buffer::AutoCommandBufferBuilder;
 use vulkano::command_buffer::AutoCommandBuffer;
 use vulkano::command_buffer::DynamicState;
@@ -27,6 +30,7 @@ use vulkano::command_buffer::pool::standard::StandardCommandPoolAlloc;
 use vulkano::descriptor::DescriptorSet;
 use vulkano::descriptor::descriptor_set::DescriptorSetsCollection;
 use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
+use vulkano::descriptor::descriptor_set::PersistentDescriptorSetBuf;
 use vulkano::device::Device;
 use vulkano::device::{Queue, QueuesIter};
 use vulkano::framebuffer::Framebuffer;
@@ -40,6 +44,7 @@ use vulkano::instance::Instance;
 use vulkano::instance::InstanceExtensions;
 use vulkano::instance::PhysicalDeviceType;
 use vulkano::instance::debug::DebugCallback;
+use vulkano::memory::pool::StdMemoryPool;
 use vulkano::pipeline::GraphicsPipeline;
 use vulkano::pipeline::GraphicsPipelineAbstract;
 use vulkano::pipeline::vertex::SingleBufferDefinition;
@@ -53,6 +58,7 @@ use vulkano::sync::NowFuture;
 
 static ENABLE_VALIDATION_LAYERS: bool = true;
 
+#[derive(Clone)]
 struct ModelViewProj_uniform {
     model: [[f32; 4]; 4], //Matrix4<f32>,
     view: [[f32; 4]; 4], //Matrix4<f32>,
@@ -63,15 +69,68 @@ struct ModelViewProj {
     model: Matrix4<f32>,
     view: Matrix4<f32>,
     proj: Matrix4<f32>,
+    uniform_buffer: Arc<CpuAccessibleBuffer<ModelViewProj_uniform>>,
+    set: Arc<PersistentDescriptorSet<Arc<GraphicsPipelineAbstract + Send + Sync>, (() , PersistentDescriptorSetBuf<Arc<CpuAccessibleBuffer<ModelViewProj_uniform>>>)>>,
 }
 
 impl ModelViewProj {
+    pub fn new(device: Arc<Device>, pipeline: Arc<GraphicsPipelineAbstract + Send + Sync>,
+               frambuffer_n: usize,
+               model: Matrix4<f32>, view: Matrix4<f32>, proj: Matrix4<f32>)
+               -> Result<Arc<Self>, String>
+    {
+        let uniform_data = ModelViewProj::uniform_data_from_data(model, view, proj);
+
+        let uniform_buffer = vulkano::buffer::CpuAccessibleBuffer::from_data(device, vulkano::buffer::BufferUsage {
+            uniform_buffer: true,
+            .. vulkano::buffer::BufferUsage::none()
+        }, uniform_data)
+            .map_err(|e| format!("Error creating Uniform Buffer: {}", e))?;
+
+        let set = Arc::new(PersistentDescriptorSet::start(pipeline.clone(), 0)
+            .add_buffer(uniform_buffer.clone())
+            .map_err(|e| format!("Error adding ModelViewProj_uniform buffer to set: {}", e))?
+            .build()
+            .map_err(|e| format!("Error building persistent set for ModelViewProj_uniform: {}", e))?
+        );
+
+        Ok(Arc::new(Self {
+            model: model,
+            view: view,
+            proj: proj,
+            uniform_buffer: uniform_buffer,
+            set: set,
+        }))
+    }
+
     pub fn uniform_data(&self) -> ModelViewProj_uniform {
         ModelViewProj_uniform {
             model: Matrix4::from(self.model).into(),
             view: self.view.into(),
             proj: self.proj.into(),
         }
+    }
+
+    fn uniform_data_from_data(model: Matrix4<f32>, view: Matrix4<f32>, proj: Matrix4<f32>) -> ModelViewProj_uniform {
+        ModelViewProj_uniform {
+            model: model.into(),
+            view: view.into(),
+            proj: proj.into(),
+        }
+    }
+
+    pub fn uniform_data_update(&self, framebuffer_i: usize) -> Result<(), String> {
+        let mut content = self.uniform_buffer.write()
+            .map_err(|e| format!("impossible to lock uniform buffer write access: {}", e))?;
+        let uniform = self.uniform_data();
+        content.clone_from(&uniform);
+
+        Ok(())
+    }
+
+    pub fn multiply_model(&mut self, transformation: Matrix4<f32>) {
+        let tmp = self.model * transformation;
+        self.model = tmp;
     }
 }
 
@@ -133,7 +192,7 @@ pub struct App {
     vertex_buffer: Arc<CpuAccessibleBuffer<[Vertex]>>,
     framebuffers: Vec<Arc<Framebuffer<Arc<RenderPassAbstract + Send + Sync>, ((), Arc<SwapchainImage>)>>>,
     command_buffers: Vec<Arc<AutoCommandBuffer<StandardCommandPoolAlloc>>>,
-    model_view_proj: ModelViewProj,
+    model_view_proj: Arc<ModelViewProj>,
 //    vk_physical_device: PhysicalDevice,
 //    validation_layers: Vec<& 'static str>,
 //    device_extensions: Vec<DeviceExtensions>,
@@ -205,7 +264,7 @@ impl App {
             Arc<CpuAccessibleBuffer<[Vertex]>>,
             Vec<Arc<Framebuffer<Arc<RenderPassAbstract + Send + Sync>, ((), Arc<SwapchainImage>)>>>,
             Vec<Arc<AutoCommandBuffer<StandardCommandPoolAlloc>>>,
-            ModelViewProj,
+            Arc<ModelViewProj>,
         ), String>
     {
         let vk_instance = App::create_instance(glfw)?;
@@ -230,13 +289,13 @@ impl App {
         // iterator and throw it away.
         let graphic_queue = queues.next().unwrap();
 
-        let (swapchain, images, depth_buffer) = App::create_swap_chain(physical_device, &surface, &device, graphic_queue.clone(), &caps, dimensions)?;
+        let (swapchain, images) = App::create_swap_chain(physical_device, &surface, &device, graphic_queue.clone(), &caps, dimensions)?;
 
         App::create_image_views()?;
         let shader = App::create_shader(device.clone())?;
         let render_pass = App::create_render_pass(device.clone(), swapchain.clone())?;
         let pipeline = App::create_graphics_pipeline(device.clone(), &shader, &images, render_pass.clone())?;
-        let (mod_view_proj_set , model_view_proj) = App::create_descriptor_set_layout(device.clone(), pipeline.clone())?;
+        let (mod_view_proj_set , model_view_proj) = App::create_descriptor_set_layout(device.clone(), pipeline.clone(), images.len())?;
         let vertex_buffer = App::create_vertex_buffer(device.clone())?;
         let material = App::load_and_create_texture_buffer(&graphic_queue, shader.clone())?;
         let framebuffers = App::create_frame_buffers(images, render_pass.clone())?;
@@ -395,7 +454,7 @@ impl App {
     }
 
     fn create_swap_chain(physical_device: PhysicalDevice, surface: &Arc<Surface>, device: &Arc<Device>, queue: Arc<Queue>, capabilities: &vulkano::swapchain::Capabilities, dimensions: [u32; 2])
-        -> Result<(Arc<Swapchain>, Vec<Arc<SwapchainImage>>, Arc<AttachmentImage<vulkano::format::D16Unorm>>), String>
+        -> Result<(Arc<Swapchain>, Vec<Arc<SwapchainImage>>), String>
     {
 
         // The alpha mode indicates how the alpha value of the final image will behave. For example
@@ -405,8 +464,8 @@ impl App {
         // Choosing the internal format that the images will have.
         let format = capabilities.supported_formats[0].0;
 
-        let depth_buffer = AttachmentImage::transient(device.clone(), dimensions, vulkano::format::D16Unorm)
-            .map_err(|e| format!("Error creating depth buffer: {}", e))?;
+//        let depth_buffer: Arc<AttachmentImage<vulkano::format::D16Unorm>> = AttachmentImage::transient(device.clone(), dimensions, vulkano::format::D16Unorm)
+//            .map_err(|e| format!("Error creating depth buffer: {}", e))?;
 
         // Please take a look at the docs for the meaning of the parameters we didn't mention.
         let (swapchain, images) = Swapchain::new(device.clone(), surface.clone(), capabilities.min_image_count, format,
@@ -414,7 +473,7 @@ impl App {
                        SurfaceTransform::Identity, alpha, PresentMode::Relaxed, true,
                        None).map_err(|e| format!("failed to create swapchain: {}", e))?;
 
-        Ok((swapchain, images, depth_buffer))
+        Ok((swapchain, images))
     }
 
     fn create_image_views() -> Result<(), String> {
@@ -469,8 +528,8 @@ impl App {
         ).map_err(|e| format!("failed to create render pass: {}", e))?))
     }
 
-    fn create_descriptor_set_layout(device: Arc<Device>, pipeline: Arc<GraphicsPipelineAbstract + Send + Sync>)
-                                    -> Result<(Arc<DescriptorSet + Send + Sync>, ModelViewProj), String>
+    fn create_descriptor_set_layout(device: Arc<Device>, pipeline: Arc<GraphicsPipelineAbstract + Send + Sync>, framebuffer_n: usize)
+                                    -> Result<(Arc<DescriptorSet + Send + Sync>, Arc<ModelViewProj>), String>
     {
         let uniform_buffer = vulkano::buffer::cpu_pool::CpuBufferPool::<ModelViewProj_uniform>
         ::new(device.clone(), vulkano::buffer::BufferUsage::all());
@@ -480,30 +539,16 @@ impl App {
         let scale = Matrix4::from_scale(0.01);
 
         use cgmath::SquareMatrix;
-        let mut model_view_proj = ModelViewProj {
-            proj: proj,
-            view: view * scale,
-            model: Matrix4::identity(),
-        };
+        let mut model_view_proj = ModelViewProj::new(
+            device.clone(),
+            pipeline.clone(),
+            framebuffer_n,
+            Matrix4::identity(),
+            view * scale,
+            proj,
+        )?;
 
-        let uniform_data_subbuffer = {
-            let elapsed = 0;
-            let rotation = 1.0_f64;
-            let rotation = cgmath::Matrix3::from_angle_y(cgmath::Rad(rotation as f32));
-
-            model_view_proj.model = model_view_proj.model * Matrix4::from(rotation);
-
-            let uniform_data = model_view_proj.uniform_data();
-            uniform_buffer.next(uniform_data)
-        };
-
-        let set = PersistentDescriptorSet::start(pipeline, 0)
-            .add_buffer(uniform_data_subbuffer)
-            .map_err(|e| format!("Error adding ModelViewProj_uniform buffer to set: {}", e))?
-            .build()
-            .map_err(|e| format!("Error building persistent set for ModelViewProj_uniform: {}", e))?;
-
-        Ok((Arc::new(set), model_view_proj))
+        Ok((model_view_proj.set.clone(), model_view_proj))
     }
 
     fn create_graphics_pipeline(device: Arc<Device>, shader: &Arc<Shader>, images: &Vec<Arc<SwapchainImage>>, render_pass: Arc<RenderPassAbstract + Send + Sync>)
@@ -561,12 +606,12 @@ impl App {
             device,
             BufferUsage::all(),
             [
-                Vertex { position: [-100.0, -100.0], texture_coordinate: [-1.0, -1.0], color: [1.0, 0.0, 0.0] },
-                Vertex { position: [ 100.0, -100.0], texture_coordinate: [ 1.0, -1.0], color: [0.0, 1.0, 0.0] },
-                Vertex { position: [ 100.0,  100.0], texture_coordinate: [ 1.0,  1.0], color: [0.0, 0.0, 1.0] },
-                Vertex { position: [-100.0, -100.0], texture_coordinate: [-1.0, -1.0], color: [1.0, 0.0, 0.0] },
-                Vertex { position: [ 100.0,  100.0], texture_coordinate: [ 1.0,  1.0], color: [0.0, 0.0, 1.0] },
-                Vertex { position: [-100.0,  100.0], texture_coordinate: [-1.0,  1.0], color: [0.0, 1.0, 0.0] },
+                Vertex { position: [-100.0, -100.0], texture_coordinate: [0.0, 0.0], color: [1.0, 0.0, 0.0] },
+                Vertex { position: [ 100.0, -100.0], texture_coordinate: [1.0, 0.0], color: [0.0, 1.0, 0.0] },
+                Vertex { position: [ 100.0,  100.0], texture_coordinate: [1.0, 1.0], color: [0.0, 0.0, 1.0] },
+                Vertex { position: [-100.0, -100.0], texture_coordinate: [0.0, 0.0], color: [1.0, 0.0, 0.0] },
+                Vertex { position: [ 100.0,  100.0], texture_coordinate: [1.0, 1.0], color: [0.0, 0.0, 1.0] },
+                Vertex { position: [-100.0,  100.0], texture_coordinate: [0.0, 1.0], color: [0.0, 1.0, 0.0] },
             ].iter().cloned()
         ).map_err(|e| format!("Failed to create Vertex Buffers: {}", e))
     }
@@ -651,32 +696,43 @@ impl App {
     fn main_loop(mut self) -> Result<(), String> {
         use std::time::Instant;
         let start_timer = Instant::now();
+        let mut should_close = false;
 
-        while !self.window.should_close() {
-            let now = Instant::now();
-
-            let elapsed = start_timer.elapsed();
-            let rotation = elapsed.as_secs() as f64 + elapsed.subsec_nanos() as f64 / 1_000_000_000.0;
-            let rotation = cgmath::Matrix3::from_angle_y(cgmath::Rad(rotation as f32));
-
-            self.model_view_proj.model = self.model_view_proj.model * Matrix4::from(rotation);
-
+        while !should_close {
             self.glfw.poll_events();
-            self.draw_frame();
+            let now = Instant::now();
+            self.update_model_view_proj(&now, &start_timer);
+            self.draw_frame(&now);
 
             let elapsed = now.elapsed();
             let ms = (elapsed.as_secs() as f64) + (elapsed.subsec_nanos() as f64 / 1000_000.0);
             println!("ms: {}", ms);
+
+            should_close = self.window.should_close();
         }
 
         Ok(())
     }
 
-    fn draw_frame(&self) {
+    fn update_model_view_proj(&mut self, now: &Instant, start_timer: &Instant) -> () {
+
+        let elapsed = start_timer.elapsed();
+        let rotation = elapsed.as_secs() as f64 + elapsed.subsec_nanos() as f64 / 1_000_000_000.0;
+        let rotation = cgmath::Matrix3::from_angle_y(cgmath::Rad((rotation as f32)/10.0 ));
+
+        let mut model_view_proj = Arc::get_mut(&mut self.model_view_proj).unwrap();
+        model_view_proj.multiply_model(Matrix4::from(rotation));
+
+
+    }
+
+    fn draw_frame(&self, now: &Instant) {
         let (image_num, acquire_future) = vulkano::swapchain::acquire_next_image(
             self.vk_swapchain.clone(),
             None,
         ).expect("failed to acquire swapchain in time");
+
+        let future = self.model_view_proj.uniform_data_update(image_num);
 
         acquire_future
             .then_execute(self.vk_graphic_queue.clone(), self.command_buffers[image_num].clone()).unwrap()

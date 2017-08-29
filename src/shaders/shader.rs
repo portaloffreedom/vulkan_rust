@@ -109,21 +109,28 @@ impl Iterator for VertInputIter {
         // * Format of each element must be no larger than 128 bits.
         if self.0 == 0 {
             self.0 += 1;
-            return Some(ShaderInterfaceDefEntry {
-                location: 1..2,
-                format: format::Format::R32G32B32Sfloat,
-                name: Some(Cow::Borrowed("color"))
-            });
-        }
-        if self.0 == 1 {
-            self.0 += 1;
-            return Some(ShaderInterfaceDefEntry {
+            Some(ShaderInterfaceDefEntry {
                 location: 0..1,
                 format: format::Format::R32G32Sfloat,
                 name: Some(Cow::Borrowed("position"))
-            });
+            })
+        } else if self.0 == 1 {
+            self.0 += 1;
+            Some(ShaderInterfaceDefEntry {
+                location: 1..2,
+                format: format::Format::R32G32Sfloat,
+                name: Some(Cow::Borrowed("texture_coordinate"))
+            })
+        } else if self.0 == 2 {
+            self.0 += 1;
+            Some(ShaderInterfaceDefEntry {
+                location: 2..3,
+                format: format::Format::R32G32B32Sfloat,
+                name: Some(Cow::Borrowed("color"))
+            })
+        } else {
+            None
         }
-        None
     }
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -157,13 +164,21 @@ impl Iterator for VertOutputIter {
     fn next(&mut self) -> Option<Self::Item> {
         if self.0 == 0 {
             self.0 += 1;
-            return Some(ShaderInterfaceDefEntry {
+            Some(ShaderInterfaceDefEntry {
                 location: 0..1,
                 format: format::Format::R32G32B32Sfloat,
                 name: Some(Cow::Borrowed("v_color"))
-            });
+            })
+        } else if self.0 == 1 {
+            self.0 += 1;
+            Some(ShaderInterfaceDefEntry {
+                location: 1..2,
+                format: format::Format::R32G32Sfloat,
+                name: Some(Cow::Borrowed("tex_coords"))
+            })
+        } else {
+            None
         }
-        None
     }
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -246,13 +261,21 @@ impl Iterator for FragInputIter {
     fn next(&mut self) -> Option<Self::Item> {
         if self.0 == 0 {
             self.0 += 1;
-            return Some(ShaderInterfaceDefEntry {
+            Some(ShaderInterfaceDefEntry {
                 location: 0..1,
                 format: format::Format::R32G32B32Sfloat,
                 name: Some(Cow::Borrowed("v_color"))
-            });
+            })
+        } else if self.0 == 1 {
+            self.0 += 1;
+            Some(ShaderInterfaceDefEntry {
+                location: 1..2,
+                format: format::Format::R32G32Sfloat,
+                name: Some(Cow::Borrowed("tex_coords"))
+            })
+        } else {
+            None
         }
-        None
     }
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
