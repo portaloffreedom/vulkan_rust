@@ -2,8 +2,7 @@
 #extension GL_ARB_separate_shader_objects : enable
 
 layout(set = 0, binding = 0) uniform UniformBufferObject {
-    mat4 model;
-    mat4 view;
+    mat4 modelview;
     mat4 proj;
 } ubo;
 
@@ -21,6 +20,6 @@ out gl_PerVertex {
 void main() {
     v_color = color;
 
-    gl_Position = ubo.proj * ubo.view * ubo.model * vec4(position, 0.0, 1.0);
+    gl_Position = ubo.proj * ubo.modelview * vec4(position, 0.0, 1.0);
     tex_coords = texture_coordinate; // (position + vec2(1)) /2;
 }

@@ -5,6 +5,7 @@ use std::f32::consts::FRAC_PI_2;
 
 use cgmath;
 use cgmath::Matrix4;
+use matrixstack::MatrixStack;
 
 use glfw;
 use glfw::Glfw;
@@ -50,14 +51,12 @@ static ENABLE_VALIDATION_LAYERS: bool = true;
 
 #[derive(Clone)]
 struct ModelViewProj_uniform {
-    model: [[f32; 4]; 4], //Matrix4<f32>,
-    view: [[f32; 4]; 4], //Matrix4<f32>,
+    modelview: [[f32; 4]; 4], //Matrix4<f32>,
     proj: [[f32; 4]; 4], //Matrix4<f32>,
 }
 
 struct ModelViewProj {
-    model: Matrix4<f32>,
-    view: Matrix4<f32>,
+    modelview: MatrixStack<f32>,
     proj: Matrix4<f32>,
     uniform_buffer: Arc<CpuBufferPool<ModelViewProj_uniform>>,
 }
@@ -72,9 +71,13 @@ impl ModelViewProj {
             .. vulkano::buffer::BufferUsage::none()
         });
 
+        let mut model_view_stack = MatrixStack::new();
+        model_view_stack.transform(view);
+        model_view_stack.transform(model);
+
+
         Ok(Arc::new(Self {
-            model: model,
-            view: view,
+            modelview: model_view_stack,
             proj: proj,
             uniform_buffer: Arc::new(uniform_buffer),
         }))
@@ -82,8 +85,7 @@ impl ModelViewProj {
 
     pub fn uniform_data(&self) -> ModelViewProj_uniform {
         ModelViewProj_uniform {
-            model: Matrix4::from(self.model).into(),
-            view: self.view.into(),
+            modelview: self.modelview.get_matrix().into(),
             proj: self.proj.into(),
         }
     }
@@ -101,9 +103,16 @@ impl ModelViewProj {
         Ok(set)
     }
 
-    pub fn multiply_model(&mut self, transformation: Matrix4<f32>) {
-        let tmp = self.model * transformation;
-        self.model = tmp;
+    pub fn transform(&mut self, transformation: Matrix4<f32>) {
+        self.modelview.transform(transformation);
+    }
+
+    pub fn save(&mut self) {
+        self.modelview.push();
+    }
+
+    pub fn restore(&mut self) -> Matrix4<f32> {
+        self.modelview.pop()
     }
 }
 
@@ -659,7 +668,7 @@ impl App {
         let rotation = cgmath::Matrix3::from_angle_y(cgmath::Rad((rotation as f32)/10.0 ));
 
         let model_view_proj = Arc::get_mut(&mut self.model_view_proj).unwrap();
-        model_view_proj.multiply_model(Matrix4::from(rotation));
+        model_view_proj.transform(Matrix4::from(rotation));
 
 
     }

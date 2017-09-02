@@ -8,6 +8,10 @@ build = "build.rs"
 image = "0.15.0"
 cgmath = "0.15.0"
 
+[dependencies.matrixstack]
+version = "0.1.4"
+git = "https://github.com/portaloffreedom/matrixstack-rs.git"
+
 #[dependencies.vek]
 #version = "0.2.2"
 #features = ["adjust features for slow compiling time"]
