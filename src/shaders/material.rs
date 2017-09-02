@@ -23,10 +23,11 @@ use shaders::shader::Shader;
 pub struct Material {
     texture: Arc<ImmutableImage<format::R8G8B8A8Srgb>>, //ImageAccess
     shader: Arc<Shader>,
+    set: Arc<DescriptorSet + Send + Sync>,
 }
 
 impl Material {
-    pub fn new<P: AsRef<Path>>(queue: &Arc<Queue>, shader: Arc<Shader>, path: P)
+    pub fn new<P: AsRef<Path>>(device: Arc<Device>, pipeline: Arc<GraphicsPipelineAbstract + Send + Sync>, queue: &Arc<Queue>, shader: Arc<Shader>, path: P)
                                -> Result<(Arc<Self>, CommandBufferExecFuture<NowFuture, AutoCommandBuffer>), String>
     {
         use vulkano::image::Dimensions;
@@ -65,16 +66,19 @@ impl Material {
             queue.clone()
         ).map_err(|e| format!("Error creating the image: {}", e))?;
 
+        let set = Material::create_set(device, pipeline, image.clone())?;
+
         Ok(
             (Arc::new(Material {
                 texture: image,
                 shader: shader,
+                set: set,
             }),
              future)
         )
     }
 
-    fn sampler(&self, device: Arc<Device>) -> Result<Arc<Sampler>, String> {
+    fn sampler(device: Arc<Device>) -> Result<Arc<Sampler>, String> {
         use vulkano::sampler::{Filter, MipmapMode, SamplerAddressMode};
 
         Sampler::new(device, Filter::Linear,
@@ -86,17 +90,23 @@ impl Material {
             .map_err(|e| format!("Error creating texture sampler: {}", e))
     }
 
-    pub fn set(&self, device: Arc<Device>, pipeline: Arc<GraphicsPipelineAbstract + Send + Sync>)
-               -> Result<Arc<DescriptorSet + Send + Sync>, String>
+    fn create_set(device: Arc<Device>, pipeline: Arc<GraphicsPipelineAbstract + Send + Sync>, texture: Arc<ImmutableImage<format::R8G8B8A8Srgb>>)
+                  -> Result<Arc<DescriptorSet + Send + Sync>, String>
     {
-        let sampler = self.sampler(device)?;
+        let sampler = Material::sampler(device)?;
 
         let set = PersistentDescriptorSet::start(pipeline, 1)
-            .add_sampled_image(self.texture.clone(), sampler)
-            .map_err(|e| format!("Error adding image to material set: {}", e))?
+            .add_sampled_image(texture, sampler)
+            .map_err(|e| format!("Error adding image to materila set: {}", e))?
             .build()
             .map_err(|e| format!("Error creating material set: {}", e))?;
 
         Ok(Arc::new(set))
+    }
+
+    pub fn set(&self)
+               -> Arc<DescriptorSet + Send + Sync>
+    {
+        self.set.clone()
     }
 }

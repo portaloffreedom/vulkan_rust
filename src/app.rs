@@ -69,37 +69,26 @@ struct ModelViewProj {
     model: Matrix4<f32>,
     view: Matrix4<f32>,
     proj: Matrix4<f32>,
-    uniform_buffer: Arc<CpuAccessibleBuffer<ModelViewProj_uniform>>,
-    set: Arc<PersistentDescriptorSet<Arc<GraphicsPipelineAbstract + Send + Sync>, (() , PersistentDescriptorSetBuf<Arc<CpuAccessibleBuffer<ModelViewProj_uniform>>>)>>,
+    uniform_buffer: Arc<CpuBufferPool<ModelViewProj_uniform>>,
 }
 
 impl ModelViewProj {
-    pub fn new(device: Arc<Device>, pipeline: Arc<GraphicsPipelineAbstract + Send + Sync>,
-               frambuffer_n: usize,
+    pub fn new(device: Arc<Device>,
                model: Matrix4<f32>, view: Matrix4<f32>, proj: Matrix4<f32>)
                -> Result<Arc<Self>, String>
     {
         let uniform_data = ModelViewProj::uniform_data_from_data(model, view, proj);
 
-        let uniform_buffer = vulkano::buffer::CpuAccessibleBuffer::from_data(device, vulkano::buffer::BufferUsage {
+        let uniform_buffer = vulkano::buffer::CpuBufferPool::<ModelViewProj_uniform>::new(device, vulkano::buffer::BufferUsage {
             uniform_buffer: true,
             .. vulkano::buffer::BufferUsage::none()
-        }, uniform_data)
-            .map_err(|e| format!("Error creating Uniform Buffer: {}", e))?;
-
-        let set = Arc::new(PersistentDescriptorSet::start(pipeline.clone(), 0)
-            .add_buffer(uniform_buffer.clone())
-            .map_err(|e| format!("Error adding ModelViewProj_uniform buffer to set: {}", e))?
-            .build()
-            .map_err(|e| format!("Error building persistent set for ModelViewProj_uniform: {}", e))?
-        );
+        });
 
         Ok(Arc::new(Self {
             model: model,
             view: view,
             proj: proj,
-            uniform_buffer: uniform_buffer,
-            set: set,
+            uniform_buffer: Arc::new(uniform_buffer),
         }))
     }
 
@@ -119,13 +108,17 @@ impl ModelViewProj {
         }
     }
 
-    pub fn uniform_data_update(&self, framebuffer_i: usize) -> Result<(), String> {
-        let mut content = self.uniform_buffer.write()
-            .map_err(|e| format!("impossible to lock uniform buffer write access: {}", e))?;
-        let uniform = self.uniform_data();
-        content.clone_from(&uniform);
+    pub fn uniform_data_update(&self, pipeline: Arc<GraphicsPipelineAbstract + Send + Sync>) -> Result<Arc<DescriptorSet + Send + Sync>, String> {
+        let uniform_subbuffer = self.uniform_buffer.next(self.uniform_data());
 
-        Ok(())
+        let set = Arc::new(PersistentDescriptorSet::start(pipeline, 0)
+            .add_buffer(uniform_subbuffer)
+            .map_err(|e| format!("Error adding ModelViewProj_uniform buffer to set: {}", e))?
+            .build()
+            .map_err(|e| format!("Error building persistent set for ModelViewProj_uniform: {}", e))?
+        );
+
+        Ok(set)
     }
 
     pub fn multiply_model(&mut self, transformation: Matrix4<f32>) {
@@ -191,8 +184,8 @@ pub struct App {
     vk_pipeline: Arc<GraphicsPipelineAbstract + Send + Sync>,
     vertex_buffer: Arc<CpuAccessibleBuffer<[Vertex]>>,
     framebuffers: Vec<Arc<Framebuffer<Arc<RenderPassAbstract + Send + Sync>, ((), Arc<SwapchainImage>)>>>,
-    command_buffers: Vec<Arc<AutoCommandBuffer<StandardCommandPoolAlloc>>>,
     model_view_proj: Arc<ModelViewProj>,
+    material: Arc<Material>,
 //    vk_physical_device: PhysicalDevice,
 //    validation_layers: Vec<& 'static str>,
 //    device_extensions: Vec<DeviceExtensions>,
@@ -203,7 +196,7 @@ impl App {
     pub fn new(width: u32, height: u32) -> Result<App, String> {
         let title = "Vulkan test";
         let (glfw, window) = App::init_window(width, height, title)?;
-        let (instance, debug_callback, surface, device, graphic_queue, swapchain, render_pass, pipeline, vertex_buffer, framebuffers, command_buffers, model_view_proj )
+        let (instance, debug_callback, surface, device, graphic_queue, swapchain, render_pass, pipeline, vertex_buffer, framebuffers, material, model_view_proj )
             = App::init_vulkan(&glfw, &window)?;
 
         Ok(App {
@@ -222,8 +215,8 @@ impl App {
             vk_pipeline: pipeline,
             vertex_buffer: vertex_buffer,
             framebuffers: framebuffers,
-            command_buffers: command_buffers,
             model_view_proj: model_view_proj,
+            material: material,
 //            vk_physical_device: physical_device,
 //            validation_layers: vec!["VK_LAYER_LUNARG_standard_validation"],
 //            device_extensions: vec![DeviceExtensions.khr_swapchain],
@@ -263,7 +256,7 @@ impl App {
             Arc<GraphicsPipelineAbstract + Send + Sync>,
             Arc<CpuAccessibleBuffer<[Vertex]>>,
             Vec<Arc<Framebuffer<Arc<RenderPassAbstract + Send + Sync>, ((), Arc<SwapchainImage>)>>>,
-            Vec<Arc<AutoCommandBuffer<StandardCommandPoolAlloc>>>,
+            Arc<Material>,
             Arc<ModelViewProj>,
         ), String>
     {
@@ -295,15 +288,12 @@ impl App {
         let shader = App::create_shader(device.clone())?;
         let render_pass = App::create_render_pass(device.clone(), swapchain.clone())?;
         let pipeline = App::create_graphics_pipeline(device.clone(), &shader, &images, render_pass.clone())?;
-        let (mod_view_proj_set , model_view_proj) = App::create_descriptor_set_layout(device.clone(), pipeline.clone(), images.len())?;
+        let model_view_proj = App::create_descriptor_set_layout(device.clone(), pipeline.clone(), images.len())?;
         let vertex_buffer = App::create_vertex_buffer(device.clone())?;
-        let material = App::load_and_create_texture_buffer(&graphic_queue, shader.clone())?;
+        let material = App::load_and_create_texture_buffer(device.clone(), pipeline.clone(),&graphic_queue, shader.clone())?;
         let framebuffers = App::create_frame_buffers(images, render_pass.clone())?;
-        App::create_command_pool()?;
-        let command_buffers = App::create_command_buffers(&device, &graphic_queue, &pipeline, &vertex_buffer, &material, &mod_view_proj_set, &framebuffers)?;
-        App::create_semaphores()?;
 
-        Ok((vk_instance.clone(), debug_callback, surface, device, graphic_queue, swapchain, render_pass, pipeline, vertex_buffer, framebuffers, command_buffers, model_view_proj))
+        Ok((vk_instance.clone(), debug_callback, surface, device, graphic_queue, swapchain, render_pass, pipeline, vertex_buffer, framebuffers, material, model_view_proj))
     }
 
     fn create_instance(glfw: &Glfw) -> Result<Arc<Instance>, String> {
@@ -529,26 +519,24 @@ impl App {
     }
 
     fn create_descriptor_set_layout(device: Arc<Device>, pipeline: Arc<GraphicsPipelineAbstract + Send + Sync>, framebuffer_n: usize)
-                                    -> Result<(Arc<DescriptorSet + Send + Sync>, Arc<ModelViewProj>), String>
+                                    -> Result<Arc<ModelViewProj>, String>
     {
         let uniform_buffer = vulkano::buffer::cpu_pool::CpuBufferPool::<ModelViewProj_uniform>
         ::new(device.clone(), vulkano::buffer::BufferUsage::all());
 
-        let proj = cgmath::perspective(cgmath::Rad(FRAC_PI_2), { 800 as f32 / 600 as f32 }, 0.01, 100.0);
+        let proj = cgmath::perspective(cgmath::Rad(FRAC_PI_2), { 800.0 as f32 / 600.0 as f32 }, 0.01, 100.0);
         let view = Matrix4::look_at(cgmath::Point3::new(0.3, 0.3, 1.0), cgmath::Point3::new(0.0, 0.0, 0.0), cgmath::Vector3::new(0.0, -1.0, 0.0));
         let scale = Matrix4::from_scale(0.01);
 
         use cgmath::SquareMatrix;
         let mut model_view_proj = ModelViewProj::new(
             device.clone(),
-            pipeline.clone(),
-            framebuffer_n,
             Matrix4::identity(),
             view * scale,
             proj,
         )?;
 
-        Ok((model_view_proj.set.clone(), model_view_proj))
+        Ok(model_view_proj)
     }
 
     fn create_graphics_pipeline(device: Arc<Device>, shader: &Arc<Shader>, images: &Vec<Arc<SwapchainImage>>, render_pass: Arc<RenderPassAbstract + Send + Sync>)
@@ -616,10 +604,10 @@ impl App {
         ).map_err(|e| format!("Failed to create Vertex Buffers: {}", e))
     }
 
-    fn load_and_create_texture_buffer(queue: &Arc<Queue>, shader: Arc<Shader>)
+    fn load_and_create_texture_buffer(device: Arc<Device>, pipeline: Arc<GraphicsPipelineAbstract + Send + Sync>, queue: &Arc<Queue>, shader: Arc<Shader>)
                                       -> Result<Arc<Material>, String>
     {
-        let (material, future) = Material::new(queue, shader, "resources/GroundForest003_1k/GroundForest003_COL_VAR1_1K.jpg")?;
+        let (material, future) = Material::new(device, pipeline, queue, shader, "resources/GroundForest003_1k/GroundForest003_COL_VAR1_1K.jpg")?;
 
         Ok(material)
     }
@@ -652,7 +640,7 @@ impl App {
                               framebuffers: &Vec<Arc<Framebuffer<Arc<RenderPassAbstract + Send + Sync>, ((), Arc<SwapchainImage>)>>>)
         -> Result<Vec<Arc<AutoCommandBuffer<StandardCommandPoolAlloc>>>, String>
     {
-        let texture_set = material.set(device.clone(), pipeline.clone())?;
+        let texture_set = material.set();
 
         let command_buffers: Result<Vec<Arc<_>>, String> = framebuffers.iter()
             .map(|framebuffer| {
@@ -688,8 +676,32 @@ impl App {
         command_buffers
     }
 
-    fn create_semaphores() -> Result<(), String> {
-        Ok(())
+    fn create_command_buffer(&self, image_num: usize, uniform_set: Arc<DescriptorSet + Send + Sync>)
+        -> Result<Box<AutoCommandBuffer<StandardCommandPoolAlloc>>, String>
+    {
+        let command_buffer: AutoCommandBuffer<StandardCommandPoolAlloc> = AutoCommandBufferBuilder::new
+            (self.vk_device.clone(), self.vk_graphic_queue.family())
+            .map_err(|e| format!("Error creating AutoCommandBufferBuilder: {}", e))?
+            .begin_render_pass(
+                self.framebuffers[image_num].clone(),
+                false,
+                vec![[0.0, 0.0, 0.0, 1.0].into(), 1.0.into()],
+            )
+            .map_err(|e| format!("Error adding begin render pass: {}", e))?
+            .draw(
+                self.vk_pipeline.clone(),
+                DynamicState::none(),
+                vec![self.vertex_buffer.clone()],
+                (uniform_set, self.material.set()),
+                (),
+            )
+            .map_err(|e| format!("Error adding draw call to render pass: {}", e))?
+            .end_render_pass()
+            .map_err(|e| format!("Error ending render pass: {}", e))?
+            .build()
+            .map_err(|e| format!("Error building render pass: {}", e))?;
+
+        Ok(Box::new(command_buffer))
     }
 
 
@@ -704,9 +716,9 @@ impl App {
             self.update_model_view_proj(&now, &start_timer);
             self.draw_frame(&now);
 
-            let elapsed = now.elapsed();
-            let ms = (elapsed.as_secs() as f64) + (elapsed.subsec_nanos() as f64 / 1000_000.0);
-            println!("ms: {}", ms);
+//            let elapsed = now.elapsed();
+//            let ms = (elapsed.as_secs() as f64) + (elapsed.subsec_nanos() as f64 / 1000_000.0);
+//            println!("ms:\t{}", ms);
 
             should_close = self.window.should_close();
         }
@@ -732,13 +744,19 @@ impl App {
             None,
         ).expect("failed to acquire swapchain in time");
 
-        let future = self.model_view_proj.uniform_data_update(image_num);
+//        let now = Instant::now();
+        let uniform_set = self.model_view_proj.uniform_data_update(self.vk_pipeline.clone()).unwrap();
+
+        let command_buffer = self.create_command_buffer(image_num, uniform_set).unwrap();
+//        let elapsed = now.elapsed();
 
         acquire_future
-            .then_execute(self.vk_graphic_queue.clone(), self.command_buffers[image_num].clone()).unwrap()
+            .then_execute(self.vk_graphic_queue.clone(), command_buffer).unwrap()
             .then_swapchain_present(self.vk_graphic_queue.clone(), self.vk_swapchain.clone(), image_num)
             .then_signal_fence_and_flush().unwrap()
             .wait(None).unwrap();
 
+//        let ms = (elapsed.as_secs() as f64) + (elapsed.subsec_nanos() as f64 / 1000_000.0);
+//        println!("rendering ms:\t{}", ms);
     }
 }
