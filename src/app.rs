@@ -1,12 +1,10 @@
-use std::ops::Deref;
 use std::time::Instant;
 use std::ptr;
 use std::sync::Arc;
 use std::f32::consts::FRAC_PI_2;
 
 use cgmath;
-use cgmath::{Vector2,Vector3,Vector4};
-use cgmath::{Matrix2,Matrix3,Matrix4};
+use cgmath::Matrix4;
 
 use glfw;
 use glfw::Glfw;
@@ -20,31 +18,24 @@ use shaders::Material;
 use vulkano;
 use vulkano::buffer::BufferUsage;
 use vulkano::buffer::CpuBufferPool;
-use vulkano::buffer::cpu_pool::CpuBufferPoolSubbuffer;
 use vulkano::buffer::CpuAccessibleBuffer;
 use vulkano::command_buffer::AutoCommandBufferBuilder;
 use vulkano::command_buffer::AutoCommandBuffer;
 use vulkano::command_buffer::DynamicState;
-use vulkano::command_buffer::CommandBufferExecFuture;
 use vulkano::command_buffer::pool::standard::StandardCommandPoolAlloc;
 use vulkano::descriptor::DescriptorSet;
-use vulkano::descriptor::descriptor_set::DescriptorSetsCollection;
 use vulkano::descriptor::descriptor_set::PersistentDescriptorSet;
-use vulkano::descriptor::descriptor_set::PersistentDescriptorSetBuf;
 use vulkano::device::Device;
 use vulkano::device::{Queue, QueuesIter};
 use vulkano::framebuffer::Framebuffer;
 use vulkano::framebuffer::RenderPassAbstract;
 use vulkano::framebuffer::Subpass;
 use vulkano::image::SwapchainImage;
-use vulkano::image::ImmutableImage;
-use vulkano::image::AttachmentImage;
 use vulkano::instance::PhysicalDevice;
 use vulkano::instance::Instance;
 use vulkano::instance::InstanceExtensions;
 use vulkano::instance::PhysicalDeviceType;
 use vulkano::instance::debug::DebugCallback;
-use vulkano::memory::pool::StdMemoryPool;
 use vulkano::pipeline::GraphicsPipeline;
 use vulkano::pipeline::GraphicsPipelineAbstract;
 use vulkano::pipeline::vertex::SingleBufferDefinition;
@@ -54,7 +45,6 @@ use vulkano::swapchain::Swapchain;
 use vulkano::swapchain::SurfaceTransform;
 use vulkano::swapchain::PresentMode;
 use vulkano::sync::GpuFuture;
-use vulkano::sync::NowFuture;
 
 static ENABLE_VALIDATION_LAYERS: bool = true;
 
@@ -77,8 +67,6 @@ impl ModelViewProj {
                model: Matrix4<f32>, view: Matrix4<f32>, proj: Matrix4<f32>)
                -> Result<Arc<Self>, String>
     {
-        let uniform_data = ModelViewProj::uniform_data_from_data(model, view, proj);
-
         let uniform_buffer = vulkano::buffer::CpuBufferPool::<ModelViewProj_uniform>::new(device, vulkano::buffer::BufferUsage {
             uniform_buffer: true,
             .. vulkano::buffer::BufferUsage::none()
@@ -97,14 +85,6 @@ impl ModelViewProj {
             model: Matrix4::from(self.model).into(),
             view: self.view.into(),
             proj: self.proj.into(),
-        }
-    }
-
-    fn uniform_data_from_data(model: Matrix4<f32>, view: Matrix4<f32>, proj: Matrix4<f32>) -> ModelViewProj_uniform {
-        ModelViewProj_uniform {
-            model: model.into(),
-            view: view.into(),
-            proj: proj.into(),
         }
     }
 
@@ -282,13 +262,13 @@ impl App {
         // iterator and throw it away.
         let graphic_queue = queues.next().unwrap();
 
-        let (swapchain, images) = App::create_swap_chain(physical_device, &surface, &device, graphic_queue.clone(), &caps, dimensions)?;
+        let (swapchain, images) = App::create_swap_chain(&surface, &device, graphic_queue.clone(), &caps, dimensions)?;
 
         App::create_image_views()?;
         let shader = App::create_shader(device.clone())?;
         let render_pass = App::create_render_pass(device.clone(), swapchain.clone())?;
         let pipeline = App::create_graphics_pipeline(device.clone(), &shader, &images, render_pass.clone())?;
-        let model_view_proj = App::create_descriptor_set_layout(device.clone(), pipeline.clone(), images.len())?;
+        let model_view_proj = App::create_descriptor_set_layout(device.clone())?;
         let vertex_buffer = App::create_vertex_buffer(device.clone())?;
         let material = App::load_and_create_texture_buffer(device.clone(), pipeline.clone(),&graphic_queue, shader.clone())?;
         let framebuffers = App::create_frame_buffers(images, render_pass.clone())?;
@@ -443,7 +423,7 @@ impl App {
             .map_err(|e| format!("failed to create device: {}", e))
     }
 
-    fn create_swap_chain(physical_device: PhysicalDevice, surface: &Arc<Surface>, device: &Arc<Device>, queue: Arc<Queue>, capabilities: &vulkano::swapchain::Capabilities, dimensions: [u32; 2])
+    fn create_swap_chain(surface: &Arc<Surface>, device: &Arc<Device>, queue: Arc<Queue>, capabilities: &vulkano::swapchain::Capabilities, dimensions: [u32; 2])
         -> Result<(Arc<Swapchain>, Vec<Arc<SwapchainImage>>), String>
     {
 
@@ -518,25 +498,20 @@ impl App {
         ).map_err(|e| format!("failed to create render pass: {}", e))?))
     }
 
-    fn create_descriptor_set_layout(device: Arc<Device>, pipeline: Arc<GraphicsPipelineAbstract + Send + Sync>, framebuffer_n: usize)
+    fn create_descriptor_set_layout(device: Arc<Device>)
                                     -> Result<Arc<ModelViewProj>, String>
     {
-        let uniform_buffer = vulkano::buffer::cpu_pool::CpuBufferPool::<ModelViewProj_uniform>
-        ::new(device.clone(), vulkano::buffer::BufferUsage::all());
-
         let proj = cgmath::perspective(cgmath::Rad(FRAC_PI_2), { 800.0 as f32 / 600.0 as f32 }, 0.01, 100.0);
         let view = Matrix4::look_at(cgmath::Point3::new(0.3, 0.3, 1.0), cgmath::Point3::new(0.0, 0.0, 0.0), cgmath::Vector3::new(0.0, -1.0, 0.0));
         let scale = Matrix4::from_scale(0.01);
 
         use cgmath::SquareMatrix;
-        let mut model_view_proj = ModelViewProj::new(
+        ModelViewProj::new(
             device.clone(),
             Matrix4::identity(),
             view * scale,
             proj,
-        )?;
-
-        Ok(model_view_proj)
+        )
     }
 
     fn create_graphics_pipeline(device: Arc<Device>, shader: &Arc<Shader>, images: &Vec<Arc<SwapchainImage>>, render_pass: Arc<RenderPassAbstract + Send + Sync>)
@@ -607,7 +582,7 @@ impl App {
     fn load_and_create_texture_buffer(device: Arc<Device>, pipeline: Arc<GraphicsPipelineAbstract + Send + Sync>, queue: &Arc<Queue>, shader: Arc<Shader>)
                                       -> Result<Arc<Material>, String>
     {
-        let (material, future) = Material::new(device, pipeline, queue, shader, "resources/GroundForest003_1k/GroundForest003_COL_VAR1_1K.jpg")?;
+        let (material, _future) = Material::new(device, pipeline, queue, shader, "resources/GroundForest003_1k/GroundForest003_COL_VAR1_1K.jpg")?;
 
         Ok(material)
     }
@@ -625,55 +600,6 @@ impl App {
             .collect();
 
         Ok(framebuffers)
-    }
-
-    fn create_command_pool() -> Result<(), String> {
-        Ok(())
-    }
-
-    fn create_command_buffers(device: &Arc<Device>,
-                              graphic_queue: &Arc<Queue>,
-                              pipeline: &Arc<GraphicsPipelineAbstract + Send + Sync>,
-                              vertex_buffer: &Arc<CpuAccessibleBuffer<[Vertex]>>,
-                              material: &Arc<Material>,
-                              modelviewsets: &Arc<DescriptorSet + Send + Sync>,
-                              framebuffers: &Vec<Arc<Framebuffer<Arc<RenderPassAbstract + Send + Sync>, ((), Arc<SwapchainImage>)>>>)
-        -> Result<Vec<Arc<AutoCommandBuffer<StandardCommandPoolAlloc>>>, String>
-    {
-        let texture_set = material.set();
-
-        let command_buffers: Result<Vec<Arc<_>>, String> = framebuffers.iter()
-            .map(|framebuffer| {
-                let command_buffer: AutoCommandBuffer<StandardCommandPoolAlloc> = AutoCommandBufferBuilder::new
-                    (
-                        device.clone(),
-                        graphic_queue.family(),
-                    )
-                    .map_err(|e| format!("Error creating AutoCommandBufferBuilder: {}", e))?
-                    .begin_render_pass(
-                        framebuffer.clone(),
-                        false,
-                        vec![[0.0, 0.0, 0.0, 1.0].into(), 1.0.into()],
-                    )
-                    .map_err(|e| format!("Error beginning render_pass build: {}", e))?
-                    .draw(
-                        pipeline.clone(),
-                        DynamicState::none(),
-                        vec![vertex_buffer.clone()],
-                        (modelviewsets.clone(), texture_set.clone()),
-                        (),
-                    )
-                    .map_err(|e| format!("Error adding draw to render pass: {}", e))?
-                    .end_render_pass()
-                    .map_err(|e| format!("Error ending render pass build: {}", e))?
-                    .build()
-                    .map_err(|e| format!("Error building render pass: {}", e))?;
-
-                Ok(Arc::new(command_buffer))
-            })
-            .collect();
-
-        command_buffers
     }
 
     fn create_command_buffer(&self, image_num: usize, uniform_set: Arc<DescriptorSet + Send + Sync>)
@@ -713,11 +639,11 @@ impl App {
         while !should_close {
             self.glfw.poll_events();
             let now = Instant::now();
-            self.update_model_view_proj(&now, &start_timer);
-            self.draw_frame(&now);
+            self.update_model_view_proj(&start_timer);
+            self.draw_frame();
 
-//            let elapsed = now.elapsed();
-//            let ms = (elapsed.as_secs() as f64) + (elapsed.subsec_nanos() as f64 / 1000_000.0);
+            let elapsed = now.elapsed();
+            let ms = (elapsed.as_secs() as f64) + (elapsed.subsec_nanos() as f64 / 1000_000.0);
 //            println!("ms:\t{}", ms);
 
             should_close = self.window.should_close();
@@ -726,19 +652,19 @@ impl App {
         Ok(())
     }
 
-    fn update_model_view_proj(&mut self, now: &Instant, start_timer: &Instant) -> () {
+    fn update_model_view_proj(&mut self, start_timer: &Instant) -> () {
 
         let elapsed = start_timer.elapsed();
         let rotation = elapsed.as_secs() as f64 + elapsed.subsec_nanos() as f64 / 1_000_000_000.0;
         let rotation = cgmath::Matrix3::from_angle_y(cgmath::Rad((rotation as f32)/10.0 ));
 
-        let mut model_view_proj = Arc::get_mut(&mut self.model_view_proj).unwrap();
+        let model_view_proj = Arc::get_mut(&mut self.model_view_proj).unwrap();
         model_view_proj.multiply_model(Matrix4::from(rotation));
 
 
     }
 
-    fn draw_frame(&self, now: &Instant) {
+    fn draw_frame(&self) {
         let (image_num, acquire_future) = vulkano::swapchain::acquire_next_image(
             self.vk_swapchain.clone(),
             None,

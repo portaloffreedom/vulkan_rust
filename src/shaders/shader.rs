@@ -18,7 +18,6 @@ use vulkano::pipeline::shader::ShaderModule;
 use vulkano::pipeline::shader::{ShaderInterfaceDef, ShaderInterfaceDefEntry};
 
 pub struct Shader {
-    device: Arc<Device>,
     vert_shader_module: Arc<ShaderModule>,
     frag_shader_module: Arc<ShaderModule>,
 }
@@ -29,7 +28,6 @@ impl Shader {
         let frag_shader_module = create_shader_module(device.clone(), frag_shader_file_path)?;
 
         Ok(Arc::new(Shader {
-            device: device,
             vert_shader_module: vert_shader_module,
             frag_shader_module: frag_shader_module,
         }))
@@ -205,8 +203,7 @@ unsafe impl PipelineLayoutDesc for VertLayout {
     }
     // Descriptor descriptions.
     fn descriptor(&self, set: usize, binding: usize) -> Option<DescriptorDesc> {
-        use vulkano::descriptor::descriptor::{DescriptorDescTy, ShaderStages, DescriptorImageDesc, DescriptorImageDescDimensions, DescriptorImageDescArray, DescriptorBufferDesc};
-        use vulkano::format::Format;
+        use vulkano::descriptor::descriptor::{DescriptorDescTy, ShaderStages, DescriptorBufferDesc};
 
         match (set, binding) {
             (0, 0) => Some(DescriptorDesc {
@@ -339,7 +336,7 @@ unsafe impl PipelineLayoutDesc for FragLayout {
         }
     }
     fn descriptor(&self, set: usize, binding: usize) -> Option<DescriptorDesc> {
-        use vulkano::descriptor::descriptor::{DescriptorDescTy, ShaderStages, DescriptorImageDesc, DescriptorImageDescDimensions, DescriptorImageDescArray, DescriptorBufferDesc};
+        use vulkano::descriptor::descriptor::{DescriptorDescTy, ShaderStages, DescriptorImageDesc, DescriptorImageDescDimensions, DescriptorImageDescArray};
         use vulkano::format::Format;
 
         match (set, binding) {
