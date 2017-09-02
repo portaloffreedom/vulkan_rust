@@ -647,6 +647,7 @@ impl App {
 
         while !should_close {
             self.glfw.poll_events();
+            Arc::get_mut(&mut self.model_view_proj).unwrap().save();
             let now = Instant::now();
             self.update_model_view_proj(&start_timer);
             self.draw_frame();
@@ -656,6 +657,7 @@ impl App {
 //            println!("ms:\t{}", ms);
 
             should_close = self.window.should_close();
+            Arc::get_mut(&mut self.model_view_proj).unwrap().restore();
         }
 
         Ok(())
@@ -665,7 +667,7 @@ impl App {
 
         let elapsed = start_timer.elapsed();
         let rotation = elapsed.as_secs() as f64 + elapsed.subsec_nanos() as f64 / 1_000_000_000.0;
-        let rotation = cgmath::Matrix3::from_angle_y(cgmath::Rad((rotation as f32)/10.0 ));
+        let rotation = cgmath::Matrix3::from_angle_y(cgmath::Rad((rotation as f32)/1.0 ));
 
         let model_view_proj = Arc::get_mut(&mut self.model_view_proj).unwrap();
         model_view_proj.transform(Matrix4::from(rotation));
