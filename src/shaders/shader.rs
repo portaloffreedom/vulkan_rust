@@ -116,13 +116,20 @@ impl Iterator for VertInputIter {
             self.0 += 1;
             Some(ShaderInterfaceDefEntry {
                 location: 1..2,
-                format: format::Format::R32G32Sfloat,
-                name: Some(Cow::Borrowed("texture_coordinate"))
+                format: format::Format::R32G32B32Sfloat,
+                name: Some(Cow::Borrowed("normal"))
             })
         } else if self.0 == 2 {
             self.0 += 1;
             Some(ShaderInterfaceDefEntry {
                 location: 2..3,
+                format: format::Format::R32G32Sfloat,
+                name: Some(Cow::Borrowed("texture_coordinate"))
+            })
+        } else if self.0 == 3 {
+            self.0 += 1;
+            Some(ShaderInterfaceDefEntry {
+                location: 3..4,
                 format: format::Format::R32G32B32Sfloat,
                 name: Some(Cow::Borrowed("color"))
             })
@@ -172,7 +179,21 @@ impl Iterator for VertOutputIter {
             Some(ShaderInterfaceDefEntry {
                 location: 1..2,
                 format: format::Format::R32G32Sfloat,
-                name: Some(Cow::Borrowed("tex_coords"))
+                name: Some(Cow::Borrowed("v_texture_coordinates"))
+            })
+        } else if self.0 == 2 {
+            self.0 += 1;
+            Some(ShaderInterfaceDefEntry {
+                location: 2..3,
+                format: format::Format::R32G32B32Sfloat,
+                name: Some(Cow::Borrowed("v_normal"))
+            })
+        } else if self.0 == 3 {
+            self.0 += 1;
+            Some(ShaderInterfaceDefEntry {
+                location: 3..4,
+                format: format::Format::R32G32B32Sfloat,
+                name: Some(Cow::Borrowed("v_light_direction"))
             })
         } else {
             None
@@ -268,7 +289,21 @@ impl Iterator for FragInputIter {
             Some(ShaderInterfaceDefEntry {
                 location: 1..2,
                 format: format::Format::R32G32Sfloat,
-                name: Some(Cow::Borrowed("tex_coords"))
+                name: Some(Cow::Borrowed("v_texture_coordinates"))
+            })
+        } else if self.0 == 2 {
+            self.0 += 1;
+            Some(ShaderInterfaceDefEntry {
+                location: 2..3,
+                format: format::Format::R32G32B32Sfloat,
+                name: Some(Cow::Borrowed("v_normal"))
+            })
+        } else if self.0 == 3 {
+            self.0 += 1;
+            Some(ShaderInterfaceDefEntry {
+                location: 3..4,
+                format: format::Format::R32G32B32Sfloat,
+                name: Some(Cow::Borrowed("v_light_direction"))
             })
         } else {
             None

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::f32::consts::FRAC_PI_2;
 
 use cgmath;
-use cgmath::Matrix4;
+use cgmath::{Matrix3, Matrix4};
 use matrixstack::MatrixStack;
 
 use glfw;
@@ -56,6 +56,7 @@ static ENABLE_VALIDATION_LAYERS: bool = true;
 struct ModelViewProj_uniform {
     modelview: [[f32; 4]; 4], //Matrix4<f32>,
     proj: [[f32; 4]; 4], //Matrix4<f32>,
+    normal_matrix: [[f32; 3]; 3], //Matrix3<f32>
 }
 
 struct ModelViewProj {
@@ -87,9 +88,30 @@ impl ModelViewProj {
     }
 
     pub fn uniform_data(&self) -> ModelViewProj_uniform {
+        use cgmath::Transform;
+        use cgmath::Matrix;
+
+        let normal_matrix4: Matrix4<f32> = self.modelview.get_matrix().clone();
+        let normal_matrix: Matrix3<f32> = Matrix3::new(
+            normal_matrix4.x.x, normal_matrix4.x.y, normal_matrix4.x.z,
+            normal_matrix4.y.x, normal_matrix4.y.y, normal_matrix4.y.z,
+            normal_matrix4.z.x, normal_matrix4.z.y, normal_matrix4.z.z,
+        );
+
+
+        // Not sure if to normalize here...
+        //
+        //use cgmath::InnerSpace;
+        //let normal_matrix: Matrix3<f32> = Matrix3::from_cols(
+        //normal_matrix.x.normalize(),
+        //  normal_matrix.y.normalize(),
+        //  normal_matrix.z.normalize(),
+        //);
+
         ModelViewProj_uniform {
             modelview: self.modelview.get_matrix().into(),
             proj: self.proj.into(),
+            normal_matrix: normal_matrix.into(),
         }
     }
 
@@ -564,7 +586,7 @@ impl App {
             // See `vertex_shader`.
             .fragment_shader(frag_entry_point, ())
             .cull_mode_front()
-            .front_face_counter_clockwise()
+            .front_face_clockwise()
             .depth_stencil_disabled()
             // We have to indicate which subpass of which render pass this pipeline is going to be used
             // in. The pipeline will only be usable from this particular subpass.

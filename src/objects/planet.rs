@@ -52,11 +52,13 @@ impl Planet {
         let icosaherdon = generate_icosahedron();
 //        let icosahedron_sub = Planet::subdivide_icosahedron(&icosaherdon);
 
+        use cgmath::InnerSpace;
         let mut data: Vec<Vertex> = Vec::new();
         for t in icosaherdon {
             for v in t.iter() {
                 data.push(Vertex {
-                    position: [v.x, v.y, v.z],
+                    position: v.into(),
+                    normal: v.normalize().into(),
                     texture_coordinate: [0.0, 0.0],
                     color: [1.0, 1.0, 0.0],
                 })
