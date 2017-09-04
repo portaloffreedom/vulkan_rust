@@ -8,7 +8,7 @@ pub use self::material::Material;
 
 #[derive(Copy, Clone)]
 pub struct Vertex {
-    pub position: [f32; 2],
+    pub position: [f32; 3],
     pub texture_coordinate: [f32; 2],
     pub color: [f32; 3],
 }

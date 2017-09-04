@@ -109,7 +109,7 @@ impl Iterator for VertInputIter {
             self.0 += 1;
             Some(ShaderInterfaceDefEntry {
                 location: 0..1,
-                format: format::Format::R32G32Sfloat,
+                format: format::Format::R32G32B32Sfloat,
                 name: Some(Cow::Borrowed("position"))
             })
         } else if self.0 == 1 {

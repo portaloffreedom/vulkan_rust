@@ -9,6 +9,7 @@ extern crate matrixstack;
 
 pub mod shaders;
 //pub mod utils;
+pub mod objects;
 pub mod app;
 
 

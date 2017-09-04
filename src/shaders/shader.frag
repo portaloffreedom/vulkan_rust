@@ -10,6 +10,6 @@ layout(set = 1, binding = 0) uniform sampler2D tex;
 
 void main() {
     f_color = vec4(v_color, 1.0);
-    f_color = texture(tex, tex_coords);
+//    f_color = texture(tex, tex_coords);
 //    f_color = vec4(tex_coords, 0, 1);
 }

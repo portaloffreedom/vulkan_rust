@@ -15,8 +15,11 @@ use glfw::Window;
 use shaders::Shader;
 use shaders::Vertex;
 use shaders::Material;
+use objects::Object;
+use objects::Planet;
 
 use vulkano;
+use vulkano::buffer::BufferAccess;
 use vulkano::buffer::BufferUsage;
 use vulkano::buffer::CpuBufferPool;
 use vulkano::buffer::CpuAccessibleBuffer;
@@ -171,7 +174,7 @@ pub struct App {
     vk_swapchain: Arc<Swapchain>,
     vk_renderpass: Arc<RenderPassAbstract + Send + Sync>,
     vk_pipeline: Arc<GraphicsPipelineAbstract + Send + Sync>,
-    vertex_buffer: Arc<CpuAccessibleBuffer<[Vertex]>>,
+    objects: Vec<Arc<Object<[Vertex]>>>,
     framebuffers: Vec<Arc<Framebuffer<Arc<RenderPassAbstract + Send + Sync>, ((), Arc<SwapchainImage>)>>>,
     model_view_proj: Arc<ModelViewProj>,
     material: Arc<Material>,
@@ -185,7 +188,7 @@ impl App {
     pub fn new(width: u32, height: u32) -> Result<App, String> {
         let title = "Vulkan test";
         let (glfw, window) = App::init_window(width, height, title)?;
-        let (instance, debug_callback, surface, device, graphic_queue, swapchain, render_pass, pipeline, vertex_buffer, framebuffers, material, model_view_proj )
+        let (instance, debug_callback, surface, device, graphic_queue, swapchain, render_pass, pipeline, objects, framebuffers, material, model_view_proj )
             = App::init_vulkan(&glfw, &window)?;
 
         Ok(App {
@@ -202,7 +205,7 @@ impl App {
             vk_swapchain: swapchain,
             vk_renderpass: render_pass,
             vk_pipeline: pipeline,
-            vertex_buffer: vertex_buffer,
+            objects: objects,
             framebuffers: framebuffers,
             model_view_proj: model_view_proj,
             material: material,
@@ -243,7 +246,7 @@ impl App {
             Arc<Swapchain>,
             Arc<RenderPassAbstract + Send + Sync>,
             Arc<GraphicsPipelineAbstract + Send + Sync>,
-            Arc<CpuAccessibleBuffer<[Vertex]>>,
+            Vec<Arc<Object<[Vertex]>>>,
             Vec<Arc<Framebuffer<Arc<RenderPassAbstract + Send + Sync>, ((), Arc<SwapchainImage>)>>>,
             Arc<Material>,
             Arc<ModelViewProj>,
@@ -278,11 +281,11 @@ impl App {
         let render_pass = App::create_render_pass(device.clone(), swapchain.clone())?;
         let pipeline = App::create_graphics_pipeline(device.clone(), &shader, &images, render_pass.clone())?;
         let model_view_proj = App::create_descriptor_set_layout(device.clone())?;
-        let vertex_buffer = App::create_vertex_buffer(device.clone())?;
         let material = App::load_and_create_texture_buffer(device.clone(), pipeline.clone(),&graphic_queue, shader.clone())?;
+        let objects = App::create_objects(graphic_queue.clone(), material.clone())?;
         let framebuffers = App::create_frame_buffers(images, render_pass.clone())?;
 
-        Ok((vk_instance.clone(), debug_callback, surface, device, graphic_queue, swapchain, render_pass, pipeline, vertex_buffer, framebuffers, material, model_view_proj))
+        Ok((vk_instance.clone(), debug_callback, surface, device, graphic_queue, swapchain, render_pass, pipeline, objects, framebuffers, material, model_view_proj))
     }
 
     fn create_instance(glfw: &Glfw) -> Result<Arc<Instance>, String> {
@@ -512,7 +515,7 @@ impl App {
     {
         let proj = cgmath::perspective(cgmath::Rad(FRAC_PI_2), { 800.0 as f32 / 600.0 as f32 }, 0.01, 100.0);
         let view = Matrix4::look_at(cgmath::Point3::new(0.3, 0.3, 1.0), cgmath::Point3::new(0.0, 0.0, 0.0), cgmath::Vector3::new(0.0, -1.0, 0.0));
-        let scale = Matrix4::from_scale(0.01);
+        let scale = Matrix4::from_scale(0.7);
 
         use cgmath::SquareMatrix;
         ModelViewProj::new(
@@ -573,19 +576,25 @@ impl App {
         Ok(pipeline)
     }
 
-    fn create_vertex_buffer(device: Arc<Device>) -> Result<Arc<CpuAccessibleBuffer<[Vertex]>>, String> {
-        CpuAccessibleBuffer::from_iter(
-            device,
-            BufferUsage::all(),
-            [
-                Vertex { position: [-100.0, -100.0], texture_coordinate: [0.0, 0.0], color: [1.0, 0.0, 0.0] },
-                Vertex { position: [ 100.0, -100.0], texture_coordinate: [1.0, 0.0], color: [0.0, 1.0, 0.0] },
-                Vertex { position: [ 100.0,  100.0], texture_coordinate: [1.0, 1.0], color: [0.0, 0.0, 1.0] },
-                Vertex { position: [-100.0, -100.0], texture_coordinate: [0.0, 0.0], color: [1.0, 0.0, 0.0] },
-                Vertex { position: [ 100.0,  100.0], texture_coordinate: [1.0, 1.0], color: [0.0, 0.0, 1.0] },
-                Vertex { position: [-100.0,  100.0], texture_coordinate: [0.0, 1.0], color: [0.0, 1.0, 0.0] },
-            ].iter().cloned()
-        ).map_err(|e| format!("Failed to create Vertex Buffers: {}", e))
+    fn create_objects(queue: Arc<Queue>, material: Arc<Material>)
+                      -> Result<Vec<Arc<Object<[Vertex]>>>, String>
+    {
+//        let plane = Object::from_iter(
+//            queue.clone(),
+//            material.clone(),
+//            [
+//                Vertex { position: [-100.0, -100.0], texture_coordinate: [0.0, 0.0], color: [1.0, 0.0, 0.0] },
+//                Vertex { position: [ 100.0, -100.0], texture_coordinate: [1.0, 0.0], color: [0.0, 1.0, 0.0] },
+//                Vertex { position: [ 100.0,  100.0], texture_coordinate: [1.0, 1.0], color: [0.0, 0.0, 1.0] },
+//                Vertex { position: [-100.0, -100.0], texture_coordinate: [0.0, 0.0], color: [1.0, 0.0, 0.0] },
+//                Vertex { position: [ 100.0,  100.0], texture_coordinate: [1.0, 1.0], color: [0.0, 0.0, 1.0] },
+//                Vertex { position: [-100.0,  100.0], texture_coordinate: [0.0, 1.0], color: [0.0, 1.0, 0.0] },
+//            ].iter().cloned()
+//        )?;
+
+        let planet = Planet::new(queue, material)?;
+
+        Ok(vec![planet.object()])
     }
 
     fn load_and_create_texture_buffer(device: Arc<Device>, pipeline: Arc<GraphicsPipelineAbstract + Send + Sync>, queue: &Arc<Queue>, shader: Arc<Shader>)
@@ -612,8 +621,16 @@ impl App {
     }
 
     fn create_command_buffer(&self, image_num: usize, uniform_set: Arc<DescriptorSet + Send + Sync>)
-        -> Result<Box<AutoCommandBuffer<StandardCommandPoolAlloc>>, String>
+                             -> Result<Box<AutoCommandBuffer<StandardCommandPoolAlloc>>, String>
     {
+        let vertex_buffers = self.objects
+            .iter()
+            .map(|obj| {
+                let buf: Arc<BufferAccess + Send + Sync> = obj.vertex_buffer_ref().clone();
+                buf
+            })
+            .collect();
+
         let command_buffer: AutoCommandBuffer<StandardCommandPoolAlloc> = AutoCommandBufferBuilder::new
             (self.vk_device.clone(), self.vk_graphic_queue.family())
             .map_err(|e| format!("Error creating AutoCommandBufferBuilder: {}", e))?
@@ -626,7 +643,7 @@ impl App {
             .draw(
                 self.vk_pipeline.clone(),
                 DynamicState::none(),
-                vec![self.vertex_buffer.clone()],
+                vertex_buffers,
                 (uniform_set, self.material.set()),
                 (),
             )
