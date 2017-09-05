@@ -21,7 +21,7 @@ out gl_PerVertex {
     vec4 gl_Position;
 };
 
-const vec3 light_position = vec3(-10.0, 10.0, 10.0);
+const vec3 light_position = vec3(-10.0, -10.0, 50.0);
 
 void main()
 {
