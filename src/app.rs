@@ -201,8 +201,6 @@ pub struct App {
     model_view_proj: Arc<ModelViewProj>,
     material: Arc<Material>,
 //    vk_physical_device: PhysicalDevice,
-//    validation_layers: Vec<& 'static str>,
-//    device_extensions: Vec<DeviceExtensions>,
 }
 
 
@@ -211,7 +209,7 @@ impl App {
         let title = "Vulkan test";
         let (glfw, window) = App::init_window(width, height, title)?;
         let (instance, debug_callback, surface, device, graphic_queue, swapchain, render_pass, pipeline, objects, framebuffers, material, model_view_proj )
-            = App::init_vulkan(&glfw, &window)?;
+            = App::init_vulkan(&glfw, &window, [width, height])?;
 
         Ok(App {
             title: title,
@@ -232,8 +230,6 @@ impl App {
             model_view_proj: model_view_proj,
             material: material,
 //            vk_physical_device: physical_device,
-//            validation_layers: vec!["VK_LAYER_LUNARG_standard_validation"],
-//            device_extensions: vec![DeviceExtensions.khr_swapchain],
         })
     }
 
@@ -258,7 +254,7 @@ impl App {
         }
     }
 
-    fn init_vulkan(glfw: &Glfw, window: &Window)
+    fn init_vulkan(glfw: &Glfw, window: &Window, render_area_dimensions: [u32; 2])
         -> Result<(
             Arc<Instance>,
             Option<DebugCallback>,
@@ -287,7 +283,7 @@ impl App {
         // We choose the dimensions of the swapchain to match the current dimensions of the window.
         // If `caps.current_extent` is `None`, this means that the window size will be determined
         // by the dimensions of the swapchain, in which case we just use the width and height defined above.
-        let dimensions = caps.current_extent.unwrap_or([800, 600]); //TODO this 800, 600 are bad hardcoded values
+        let dimensions = caps.current_extent.unwrap_or(render_area_dimensions);
 
         let (device, mut queues) = App::create_logical_device(physical_device, &surface)?;
 
@@ -302,7 +298,7 @@ impl App {
         let shader = App::create_shader(device.clone())?;
         let render_pass = App::create_render_pass(device.clone(), swapchain.clone())?;
         let pipeline = App::create_graphics_pipeline(device.clone(), &shader, &images, render_pass.clone())?;
-        let model_view_proj = App::create_descriptor_set_layout(device.clone())?;
+        let model_view_proj = App::create_descriptor_set_layout(device.clone(), dimensions)?;
         let material = App::load_and_create_texture_buffer(device.clone(), pipeline.clone(),&graphic_queue, shader.clone())?;
         let objects = App::create_objects(graphic_queue.clone(), material.clone())?;
         let framebuffers = App::create_frame_buffers(images, render_pass.clone())?;
@@ -532,10 +528,10 @@ impl App {
         ).map_err(|e| format!("failed to create render pass: {}", e))?))
     }
 
-    fn create_descriptor_set_layout(device: Arc<Device>)
+    fn create_descriptor_set_layout(device: Arc<Device>, dimensions: [u32; 2])
                                     -> Result<Arc<ModelViewProj>, String>
     {
-        let proj = cgmath::perspective(cgmath::Rad(FRAC_PI_2), { 800.0 as f32 / 600.0 as f32 }, 0.01, 100.0);
+        let proj = cgmath::perspective(cgmath::Rad(FRAC_PI_2), { dimensions[0] as f32 / dimensions[1] as f32 }, 0.01, 100.0);
         let view = Matrix4::look_at(cgmath::Point3::new(0.3, 0.3, 1.0), cgmath::Point3::new(0.0, 0.0, 0.0), cgmath::Vector3::new(0.0, -1.0, 0.0));
         let scale = Matrix4::from_scale(0.7);
 
