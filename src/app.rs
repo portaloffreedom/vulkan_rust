@@ -1,7 +1,8 @@
-use std::time::Instant;
+use std::f32::consts::FRAC_PI_2;
 use std::ptr;
 use std::sync::Arc;
-use std::f32::consts::FRAC_PI_2;
+use std::sync::mpsc::Receiver;
+use std::time::Instant;
 
 use cgmath;
 use cgmath::{Matrix3, Matrix4};
@@ -11,6 +12,7 @@ use glfw;
 use glfw::Glfw;
 use glfw::Context;
 use glfw::Window;
+use glfw::WindowEvent;
 
 use shaders::Shader;
 use shaders::Vertex;
@@ -50,13 +52,16 @@ use vulkano::swapchain::SurfaceTransform;
 use vulkano::swapchain::PresentMode;
 use vulkano::sync::GpuFuture;
 
-static ENABLE_VALIDATION_LAYERS: bool = true;
+static ENABLE_VALIDATION_LAYERS: bool = false;
 
 #[derive(Clone)]
 struct ModelViewProj_uniform {
-    modelview: [[f32; 4]; 4], //Matrix4<f32>,
-    proj: [[f32; 4]; 4], //Matrix4<f32>,
-    normal_matrix: [[f32; 3]; 3], //Matrix3<f32>
+    modelview: [[f32; 4]; 4],
+    //Matrix4<f32>,
+    modelviewproj: [[f32; 4]; 4],
+    //Matrix4<f32>,
+    normal_matrix: [[f32; 4]; 4],
+    //Matrix3<f32>
 }
 
 struct ModelViewProj {
@@ -72,7 +77,7 @@ impl ModelViewProj {
     {
         let uniform_buffer = vulkano::buffer::CpuBufferPool::<ModelViewProj_uniform>::new(device, vulkano::buffer::BufferUsage {
             uniform_buffer: true,
-            .. vulkano::buffer::BufferUsage::none()
+            ..vulkano::buffer::BufferUsage::none()
         });
 
         let mut model_view_stack = MatrixStack::new();
@@ -87,35 +92,42 @@ impl ModelViewProj {
         }))
     }
 
-    pub fn uniform_data(&self) -> ModelViewProj_uniform {
-        use cgmath::Transform;
-        use cgmath::Matrix;
+    pub fn uniform_data(&self)
+                        -> ModelViewProj_uniform
+    {
+        use cgmath::{Transform, Matrix, SquareMatrix};
 
-        let normal_matrix4: Matrix4<f32> = self.modelview.get_matrix().clone();
-        let normal_matrix: Matrix3<f32> = Matrix3::new(
-            normal_matrix4.x.x, normal_matrix4.x.y, normal_matrix4.x.z,
-            normal_matrix4.y.x, normal_matrix4.y.y, normal_matrix4.y.z,
-            normal_matrix4.z.x, normal_matrix4.z.y, normal_matrix4.z.z,
-        );
+        let mut normal_matrix4: Matrix4<f32> = self.modelview.get_matrix().clone();
+        normal_matrix4 = normal_matrix4.inverse_transform().unwrap();
+        normal_matrix4.transpose_self();
+
+        //let normal_matrix: Matrix3<f32> = Matrix3::new(
+        //    normal_matrix4.x.x, normal_matrix4.x.y, normal_matrix4.x.z,
+        //    normal_matrix4.y.x, normal_matrix4.y.y, normal_matrix4.y.z,
+        //    normal_matrix4.z.x, normal_matrix4.z.y, normal_matrix4.z.z,
+        //);
 
 
         // Not sure if to normalize here...
         //
         //use cgmath::InnerSpace;
         //let normal_matrix: Matrix3<f32> = Matrix3::from_cols(
-        //normal_matrix.x.normalize(),
-        //  normal_matrix.y.normalize(),
-        //  normal_matrix.z.normalize(),
+        //    normal_matrix.x.normalize(),
+        //    normal_matrix.y.normalize(),
+        //    normal_matrix.z.normalize(),
         //);
 
+        let modelview = self.modelview.get_matrix();
         ModelViewProj_uniform {
-            modelview: self.modelview.get_matrix().into(),
-            proj: self.proj.into(),
-            normal_matrix: normal_matrix.into(),
+            modelview: modelview.into(),
+            modelviewproj: (self.proj * modelview).into(),
+            normal_matrix: normal_matrix4.into(),
         }
     }
 
-    pub fn uniform_data_update(&self, pipeline: Arc<GraphicsPipelineAbstract + Send + Sync>) -> Result<Arc<DescriptorSet + Send + Sync>, String> {
+    pub fn uniform_data_update(&self, pipeline: Arc<GraphicsPipelineAbstract + Send + Sync>)
+                               -> Result<Arc<DescriptorSet + Send + Sync>, String>
+    {
         let uniform_subbuffer = self.uniform_buffer.next(self.uniform_data());
 
         let set = Arc::new(PersistentDescriptorSet::start(pipeline, 0)
@@ -128,20 +140,26 @@ impl ModelViewProj {
         Ok(set)
     }
 
-    pub fn transform(&mut self, transformation: Matrix4<f32>) {
+    pub fn transform(&mut self, transformation: Matrix4<f32>)
+    {
         self.modelview.transform(transformation);
     }
 
-    pub fn save(&mut self) {
+    pub fn save(&mut self)
+    {
         self.modelview.push();
     }
 
-    pub fn restore(&mut self) -> Matrix4<f32> {
+    pub fn restore(&mut self)
+                   -> Matrix4<f32>
+    {
         self.modelview.pop()
     }
 }
 
-fn required_extensions(glfw: &Glfw) -> InstanceExtensions {
+fn required_extensions(glfw: &Glfw)
+                       -> InstanceExtensions
+{
     let mut ideal = InstanceExtensions {
         khr_surface: true,
         khr_xlib_surface: true,
@@ -176,10 +194,10 @@ fn required_extensions(glfw: &Glfw) -> InstanceExtensions {
 
     //TODO use raw extensions reported from glfw, not all of them at the same time
     //
-    //    match InstanceExtensions::supported_by_core_raw() {
-    //        Ok(supported) => supported.intersection(&raw_extensions),
-    //        Err(_) => InstanceExtensions::none(),
-    //    }
+    //match InstanceExtensions::supported_by_core_raw() {
+    //    Ok(supported) => supported.intersection(&raw_extensions),
+    //    Err(_) => InstanceExtensions::none(),
+    //}
 }
 
 pub struct App {
@@ -188,6 +206,7 @@ pub struct App {
     height: u32,
     glfw: Glfw,
     window: Window,
+    glfw_events: Receiver<(f64, WindowEvent)>,
     vk_instance: Arc<Instance>,
     vk_debug_callback: Option<DebugCallback>,
     vk_surface: Arc<Surface>,
@@ -200,16 +219,18 @@ pub struct App {
     framebuffers: Vec<Arc<Framebuffer<Arc<RenderPassAbstract + Send + Sync>, ((), Arc<SwapchainImage>)>>>,
     model_view_proj: Arc<ModelViewProj>,
     material: Arc<Material>,
-//    vk_physical_device: PhysicalDevice,
+    //vk_physical_device: PhysicalDevice,
 }
 
 
 impl App {
-    pub fn new(width: u32, height: u32) -> Result<App, String> {
+    pub fn new(width: u32, height: u32)
+               -> Result<App, String>
+    {
         let title = "Vulkan test";
-        let (glfw, window) = App::init_window(width, height, title)?;
-        let (instance, debug_callback, surface, device, graphic_queue, swapchain, render_pass, pipeline, objects, framebuffers, material, model_view_proj )
-            = App::init_vulkan(&glfw, &window, [width, height])?;
+        let (glfw, window, glfw_events) = App::init_window(width, height, title)?;
+        let (instance, debug_callback, surface, device, graphic_queue, swapchain, render_pass, pipeline, objects, framebuffers, material, model_view_proj)
+        = App::init_vulkan(&glfw, &window, [width, height])?;
 
         Ok(App {
             title: title,
@@ -217,6 +238,7 @@ impl App {
             height: height,
             glfw: glfw,
             window: window,
+            glfw_events: glfw_events,
             vk_instance: instance,
             vk_debug_callback: debug_callback,
             vk_surface: surface,
@@ -229,46 +251,54 @@ impl App {
             framebuffers: framebuffers,
             model_view_proj: model_view_proj,
             material: material,
-//            vk_physical_device: physical_device,
+            //vk_physical_device: physical_device,
         })
     }
 
-    pub fn run(self) -> Result<(), String> {
+    pub fn run(self)
+               -> Result<(), String>
+    {
         self.main_loop()?;
 
         Ok(())
     }
 
-    fn init_window(width: u32, height: u32, title: &str) -> Result<(Glfw, Window), String> {
+    fn init_window(width: u32, height: u32, title: &str)
+                   -> Result<(Glfw, Window, Receiver<(f64, WindowEvent)>), String>
+    {
         let mut glfw = glfw::init(glfw::FAIL_ON_ERRORS).map_err(|e| format!("{}", e))?;
+        if !glfw.vulkan_supported() {
+            return Err("ERROR! Vulkan is not supported in your system!".to_string());
+        }
+
         glfw.window_hint(glfw::WindowHint::Visible(true));
         glfw.window_hint(glfw::WindowHint::ClientApi(glfw::ClientApiHint::NoApi));
         glfw.window_hint(glfw::WindowHint::Resizable(false));
 
         match glfw.create_window(width, height, title, glfw::WindowMode::Windowed) {
-            Some((window, _)) => {
-//                window.make_current();
-                Ok((glfw, window))
+            Some((mut window, events)) => {
+                window.set_key_polling(true);
+                Ok((glfw, window, events))
             }
             None => Err("Failed to create GLFW window.".to_string()),
         }
     }
 
     fn init_vulkan(glfw: &Glfw, window: &Window, render_area_dimensions: [u32; 2])
-        -> Result<(
-            Arc<Instance>,
-            Option<DebugCallback>,
-            Arc<Surface>,
-            Arc<Device>,
-            Arc<Queue>,
-            Arc<Swapchain>,
-            Arc<RenderPassAbstract + Send + Sync>,
-            Arc<GraphicsPipelineAbstract + Send + Sync>,
-            Vec<Arc<Object<[Vertex]>>>,
-            Vec<Arc<Framebuffer<Arc<RenderPassAbstract + Send + Sync>, ((), Arc<SwapchainImage>)>>>,
-            Arc<Material>,
-            Arc<ModelViewProj>,
-        ), String>
+                   -> Result<(
+                       Arc<Instance>,
+                       Option<DebugCallback>,
+                       Arc<Surface>,
+                       Arc<Device>,
+                       Arc<Queue>,
+                       Arc<Swapchain>,
+                       Arc<RenderPassAbstract + Send + Sync>,
+                       Arc<GraphicsPipelineAbstract + Send + Sync>,
+                       Vec<Arc<Object<[Vertex]>>>,
+                       Vec<Arc<Framebuffer<Arc<RenderPassAbstract + Send + Sync>, ((), Arc<SwapchainImage>)>>>,
+                       Arc<Material>,
+                       Arc<ModelViewProj>,
+                   ), String>
     {
         let vk_instance = App::create_instance(glfw)?;
         let debug_callback = App::setup_debug_callback(&vk_instance)?;
@@ -299,14 +329,16 @@ impl App {
         let render_pass = App::create_render_pass(device.clone(), swapchain.clone())?;
         let pipeline = App::create_graphics_pipeline(device.clone(), &shader, &images, render_pass.clone())?;
         let model_view_proj = App::create_descriptor_set_layout(device.clone(), dimensions)?;
-        let material = App::load_and_create_texture_buffer(device.clone(), pipeline.clone(),&graphic_queue, shader.clone())?;
+        let material = App::load_and_create_texture_buffer(device.clone(), pipeline.clone(), &graphic_queue, shader.clone())?;
         let objects = App::create_objects(graphic_queue.clone(), material.clone())?;
         let framebuffers = App::create_frame_buffers(images, render_pass.clone())?;
 
         Ok((vk_instance.clone(), debug_callback, surface, device, graphic_queue, swapchain, render_pass, pipeline, objects, framebuffers, material, model_view_proj))
     }
 
-    fn create_instance(glfw: &Glfw) -> Result<Arc<Instance>, String> {
+    fn create_instance(glfw: &Glfw)
+                       -> Result<Arc<Instance>, String>
+    {
         let instance = {
             // When we create an instance, we have to pass a list of extensions that we want to enable.
             //
@@ -329,7 +361,9 @@ impl App {
         Ok(instance)
     }
 
-    fn setup_debug_callback(vk_instance: &Arc<Instance>) -> Result<Option<DebugCallback>, String> {
+    fn setup_debug_callback(vk_instance: &Arc<Instance>)
+                            -> Result<Option<DebugCallback>, String>
+    {
         if !ENABLE_VALIDATION_LAYERS {
             return Ok(None);
         }
@@ -341,7 +375,9 @@ impl App {
         Ok(Some(_callback))
     }
 
-    fn create_surface(vk_instance: &Arc<Instance>, window: &Window) -> Result<Arc<Surface>, String> {
+    fn create_surface(vk_instance: &Arc<Instance>, window: &Window)
+                      -> Result<Arc<Surface>, String>
+    {
         use vulkano::VulkanObject;
 
         let mut _surface: u64 = 0;
@@ -350,18 +386,21 @@ impl App {
             glfw::ffi::glfwCreateWindowSurface(vk_instance.internal_object(), window.window_ptr(), ptr::null_mut(), &mut _surface)
         };
 
-        if result != 0 { // 0 is VK_SUCCESS
+        if result != 0 {
+            // 0 is VK_SUCCESS
             return Err("Error creating window surface".to_string());
         }
 
         let surface: Arc<Surface> = unsafe {
-            Arc::new(Surface::from_raw_surface( vk_instance.clone(), _surface))
+            Arc::new(Surface::from_raw_surface(vk_instance.clone(), _surface))
         };
 
         Ok(surface)
     }
 
-    fn pick_physical_device(vk_instance: &Arc<Instance>) -> Result<PhysicalDevice, String> {
+    fn pick_physical_device(vk_instance: &Arc<Instance>)
+                            -> Result<PhysicalDevice, String>
+    {
         let mut discrete_physical = None;
         let mut integrated_physical = None;
         let mut virtual_physical = None;
@@ -403,7 +442,9 @@ impl App {
         Ok(physical)
     }
 
-    fn create_logical_device(physical_device: PhysicalDevice, surface: &Surface) -> Result<(Arc<Device>, QueuesIter), String> {
+    fn create_logical_device(physical_device: PhysicalDevice, surface: &Surface)
+                             -> Result<(Arc<Device>, QueuesIter), String>
+    {
         // The next step is to choose which GPU queue will execute our draw commands.
         //
         // Devices can provide multiple queues to run commands in parallel (for example a draw queue
@@ -445,7 +486,7 @@ impl App {
         // The list of created queues is returned by the function alongside with the device.
         let device_ext = vulkano::device::DeviceExtensions {
             khr_swapchain: true,
-            .. vulkano::device::DeviceExtensions::none()
+            ..vulkano::device::DeviceExtensions::none()
         };
 
         Device::new(physical_device, physical_device.supported_features(), &device_ext,
@@ -454,9 +495,8 @@ impl App {
     }
 
     fn create_swap_chain(surface: &Arc<Surface>, device: &Arc<Device>, queue: Arc<Queue>, capabilities: &vulkano::swapchain::Capabilities, dimensions: [u32; 2])
-        -> Result<(Arc<Swapchain>, Vec<Arc<SwapchainImage>>), String>
+                         -> Result<(Arc<Swapchain>, Vec<Arc<SwapchainImage>>), String>
     {
-
         // The alpha mode indicates how the alpha value of the final image will behave. For example
         // you can choose whether the window will be opaque or transparent.
         let alpha = capabilities.supported_composite_alpha.iter().next().unwrap();
@@ -464,23 +504,27 @@ impl App {
         // Choosing the internal format that the images will have.
         let format = capabilities.supported_formats[0].0;
 
-//        let depth_buffer: Arc<AttachmentImage<vulkano::format::D16Unorm>> = AttachmentImage::transient(device.clone(), dimensions, vulkano::format::D16Unorm)
-//            .map_err(|e| format!("Error creating depth buffer: {}", e))?;
+        //let depth_buffer: Arc<AttachmentImage<vulkano::format::D16Unorm>> = AttachmentImage::transient(device.clone(), dimensions, vulkano::format::D16Unorm)
+        //    .map_err(|e| format!("Error creating depth buffer: {}", e))?;
 
         // Please take a look at the docs for the meaning of the parameters we didn't mention.
         let (swapchain, images) = Swapchain::new(device.clone(), surface.clone(), capabilities.min_image_count, format,
-                       dimensions, 1, capabilities.supported_usage_flags, &queue,
-                       SurfaceTransform::Identity, alpha, PresentMode::Relaxed, true,
-                       None).map_err(|e| format!("failed to create swapchain: {}", e))?;
+                                                 dimensions, 1, capabilities.supported_usage_flags, &queue,
+                                                 SurfaceTransform::Identity, alpha, PresentMode::Relaxed, true,
+                                                 None).map_err(|e| format!("failed to create swapchain: {}", e))?;
 
         Ok((swapchain, images))
     }
 
-    fn create_image_views() -> Result<(), String> {
+    fn create_image_views()
+        -> Result<(), String>
+    {
         Ok(())
     }
 
-    fn create_shader(device: Arc<Device>) -> Result<Arc<Shader>, String> {
+    fn create_shader(device: Arc<Device>)
+                     -> Result<Arc<Shader>, String>
+    {
         // The next step is to create the shaders.
         //
         // The raw shader creation API provided by the vulkano library is unsafe, for various reasons.
@@ -490,10 +534,11 @@ impl App {
         let fs_filepath = concat!(env!("OUT_DIR"), "/shader.frag.spv");
 
         Shader::new(device, vs_filepath, fs_filepath)
-
     }
 
-    fn create_render_pass(device: Arc<Device>, swapchain: Arc<Swapchain>) -> Result<Arc<RenderPassAbstract + Send + Sync>, String> {
+    fn create_render_pass(device: Arc<Device>, swapchain: Arc<Swapchain>)
+                          -> Result<Arc<RenderPassAbstract + Send + Sync>, String>
+    {
         // CREATE RENDER PASS
 
         // The next step is to create a *render pass*, which is an object that describes where the
@@ -545,7 +590,7 @@ impl App {
     }
 
     fn create_graphics_pipeline(device: Arc<Device>, shader: &Arc<Shader>, images: &Vec<Arc<SwapchainImage>>, render_pass: Arc<RenderPassAbstract + Send + Sync>)
-        -> Result<Arc<GraphicsPipelineAbstract + Send + Sync>, String>
+                                -> Result<Arc<GraphicsPipelineAbstract + Send + Sync>, String>
     {
         let sub_pass = Subpass::from(render_pass, 0);
         let sub_pass = if sub_pass.is_some() {
@@ -597,18 +642,18 @@ impl App {
     fn create_objects(queue: Arc<Queue>, material: Arc<Material>)
                       -> Result<Vec<Arc<Object<[Vertex]>>>, String>
     {
-//        let plane = Object::from_iter(
-//            queue.clone(),
-//            material.clone(),
-//            [
-//                Vertex { position: [-100.0, -100.0], texture_coordinate: [0.0, 0.0], color: [1.0, 0.0, 0.0] },
-//                Vertex { position: [ 100.0, -100.0], texture_coordinate: [1.0, 0.0], color: [0.0, 1.0, 0.0] },
-//                Vertex { position: [ 100.0,  100.0], texture_coordinate: [1.0, 1.0], color: [0.0, 0.0, 1.0] },
-//                Vertex { position: [-100.0, -100.0], texture_coordinate: [0.0, 0.0], color: [1.0, 0.0, 0.0] },
-//                Vertex { position: [ 100.0,  100.0], texture_coordinate: [1.0, 1.0], color: [0.0, 0.0, 1.0] },
-//                Vertex { position: [-100.0,  100.0], texture_coordinate: [0.0, 1.0], color: [0.0, 1.0, 0.0] },
-//            ].iter().cloned()
-//        )?;
+        //let plane = Object::from_iter(
+        //    queue.clone(),
+        //    material.clone(),
+        //    [
+        //        Vertex { position: [-100.0, -100.0], texture_coordinate: [0.0, 0.0], color: [1.0, 0.0, 0.0] },
+        //        Vertex { position: [ 100.0, -100.0], texture_coordinate: [1.0, 0.0], color: [0.0, 1.0, 0.0] },
+        //        Vertex { position: [ 100.0,  100.0], texture_coordinate: [1.0, 1.0], color: [0.0, 0.0, 1.0] },
+        //        Vertex { position: [-100.0, -100.0], texture_coordinate: [0.0, 0.0], color: [1.0, 0.0, 0.0] },
+        //        Vertex { position: [ 100.0,  100.0], texture_coordinate: [1.0, 1.0], color: [0.0, 0.0, 1.0] },
+        //        Vertex { position: [-100.0,  100.0], texture_coordinate: [0.0, 1.0], color: [0.0, 1.0, 0.0] },
+        //    ].iter().cloned()
+        //)?;
 
         let planet = Planet::new(queue, material)?;
 
@@ -623,8 +668,8 @@ impl App {
         Ok(material)
     }
 
-    fn create_frame_buffers(images: Vec<Arc<SwapchainImage>>,render_pass: Arc<RenderPassAbstract + Send + Sync>)
-        -> Result<Vec<Arc<Framebuffer<Arc<RenderPassAbstract + Send + Sync>, ((), Arc<SwapchainImage>)>>>, String>
+    fn create_frame_buffers(images: Vec<Arc<SwapchainImage>>, render_pass: Arc<RenderPassAbstract + Send + Sync>)
+                            -> Result<Vec<Arc<Framebuffer<Arc<RenderPassAbstract + Send + Sync>, ((), Arc<SwapchainImage>)>>>, String>
     {
         let framebuffers: Vec<_> = images
             .iter()
@@ -675,52 +720,84 @@ impl App {
     }
 
 
-    fn main_loop(mut self) -> Result<(), String> {
+    fn main_loop(mut self) -> Result<(), String>
+    {
         use std::time::Instant;
         let start_timer = Instant::now();
         let mut should_close = false;
 
         while !should_close {
             self.glfw.poll_events();
+            should_close = self.window.should_close();
+            let space_bar_pressed = self.handle_inputs();
+
             Arc::get_mut(&mut self.model_view_proj).unwrap().save();
             let now = Instant::now();
             self.update_model_view_proj(&start_timer);
+
             self.draw_frame();
 
             let elapsed = now.elapsed();
             let ms = (elapsed.as_secs() as f64) + (elapsed.subsec_nanos() as f64 / 1000_000.0);
-//            println!("ms:\t{}", ms);
+            //println!("draw frame - ms:\t{}", ms);
 
-            should_close = self.window.should_close();
             Arc::get_mut(&mut self.model_view_proj).unwrap().restore();
         }
 
         Ok(())
     }
 
-    fn update_model_view_proj(&mut self, start_timer: &Instant) -> () {
+    fn handle_inputs(&self)
+                     -> bool
+    {
+        let mut space_bar_pressed = false;
 
+        for (_, event) in glfw::flush_messages(&self.glfw_events) {
+            println!("{:?}", event);
+            use glfw::{Action, Key};
+            match event {
+                glfw::WindowEvent::Key(Key::Space, _, Action::Press, _) => {
+                    //window.set_should_close(true)
+                    space_bar_pressed = true;
+                }
+                _ => {}
+            }
+        }
+
+        space_bar_pressed
+    }
+
+    fn update_model_view_proj(&mut self, start_timer: &Instant)
+    {
         let elapsed = start_timer.elapsed();
         let rotation = elapsed.as_secs() as f64 + elapsed.subsec_nanos() as f64 / 1_000_000_000.0;
-        let rotation = cgmath::Matrix3::from_angle_y(cgmath::Rad((rotation as f32)/1.0 ));
+
+        // UNCOMMENT IF YOU WANT FIXED ROTATION FOR EVERY FRAME
+        //
+        //static mut ROTATION: f32 = 0.0_f32;
+        //let rotation = unsafe {
+        //    ROTATION += 0.05;
+        //    ROTATION
+        //};
+
+        let rotation = cgmath::Matrix3::from_angle_y(cgmath::Rad((rotation as f32) / 1.0));
 
         let model_view_proj = Arc::get_mut(&mut self.model_view_proj).unwrap();
         model_view_proj.transform(Matrix4::from(rotation));
-
-
     }
 
-    fn draw_frame(&self) {
+    fn draw_frame(&self)
+    {
         let (image_num, acquire_future) = vulkano::swapchain::acquire_next_image(
             self.vk_swapchain.clone(),
             None,
         ).expect("failed to acquire swapchain in time");
 
-//        let now = Instant::now();
+        //let now = Instant::now();
         let uniform_set = self.model_view_proj.uniform_data_update(self.vk_pipeline.clone()).unwrap();
 
         let command_buffer = self.create_command_buffer(image_num, uniform_set).unwrap();
-//        let elapsed = now.elapsed();
+        //let elapsed = now.elapsed();
 
         acquire_future
             .then_execute(self.vk_graphic_queue.clone(), command_buffer).unwrap()
@@ -728,7 +805,7 @@ impl App {
             .then_signal_fence_and_flush().unwrap()
             .wait(None).unwrap();
 
-//        let ms = (elapsed.as_secs() as f64) + (elapsed.subsec_nanos() as f64 / 1000_000.0);
-//        println!("rendering ms:\t{}", ms);
+        //let ms = (elapsed.as_secs() as f64) + (elapsed.subsec_nanos() as f64 / 1000_000.0);
+        //println!("rendering ms:\t{}", ms);
     }
 }

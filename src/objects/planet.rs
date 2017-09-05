@@ -60,7 +60,7 @@ impl Planet {
                     position: v.into(),
                     normal: v.normalize().into(),
                     texture_coordinate: [0.0, 0.0],
-                    color: [1.0, 1.0, 0.0],
+                    color: v.into(),
                 })
             }
         }

@@ -12,8 +12,8 @@ layout(set = 1, binding = 0) uniform sampler2D tex;
 
 void main() {
 
-    float diff = max(0.2, dot(v_normal, v_light_direction));
-    vec3 color = diff * v_color;
+    float diff = max(0.0, dot(v_normal, v_light_direction));
+    vec3 color = diff * v_color + vec3(0.1, 0.1, 0.1);
 
     f_color = vec4(color, 1.0);
 //    f_color = texture(tex, tex_coords);
