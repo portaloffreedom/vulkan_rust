@@ -14,13 +14,18 @@ fn main() {
     // below detail how to improve the portability of these commands.
     for shader in ["shader.vert", "shader.frag"].iter() {
 
-        Command::new(glsl_validator)
+        let status = Command::new(glsl_validator)
             .arg("-V")
             .arg(&format!("{}/{}", src_dir, shader))
             .arg("-o")
             .arg(&format!("{}/{}.spv", out_dir, shader))
             //.arg("--aml")
             .status().unwrap();
+
+        if !status.success() {
+            println!("cargo:warning=Impossible to compile {}", shader);
+            std::process::exit(1);
+        }
 
         println!("cargo:rerun-if-changed={}/{}", src_dir, shader);
         //println!("cargo:warning=compiled {} shader", shader);
