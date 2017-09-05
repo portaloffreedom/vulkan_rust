@@ -12,10 +12,10 @@ layout(location = 1) in vec3 normal;
 layout(location = 2) in vec2 texture_coordinate;
 layout(location = 3) in vec3 color;
 
-layout(location = 0) out vec3 v_color;
-layout(location = 1) out vec2 v_texture_coordinate;
-layout(location = 2) out vec3 v_normal;
-layout(location = 3) out vec3 v_light_direction;
+layout(location = 0) smooth out vec3 v_color;
+layout(location = 1) smooth out vec2 v_texture_coordinate;
+layout(location = 2) smooth out vec3 v_normal;
+layout(location = 3) smooth out vec3 v_light_direction;
 
 out gl_PerVertex {
     vec4 gl_Position;
