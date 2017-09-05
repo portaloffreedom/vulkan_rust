@@ -10,8 +10,6 @@ use shaders::Vertex;
 use shaders::Material;
 
 
-
-
 fn generate_icosahedron() -> Vec<Triangle>
 {
     let phi: f32 = (1.0_f32 + 5.0_f32.sqrt()) / 2.0_f32;
@@ -42,6 +40,44 @@ fn generate_icosahedron() -> Vec<Triangle>
     ]
 }
 
+fn slerp(p0: &Vector3<f32>, p1: Vector3<f32>, t: f32)
+         -> Vector3<f32>
+{
+    use cgmath::InnerSpace;
+
+    let omega: f32 = p0.dot(p1).acos();
+
+    let mut ret: Vector3<f32> = p0 * ((1.0_f32 - t) * omega).sin();
+    ret = ret + (p1 * (t * omega).sin());
+    ret = ret / (omega).sin();
+
+    ret
+}
+
+fn subdivide_triangle(triangle: Triangle, depth: u16)
+                      -> Vec<Triangle>
+{
+    if depth == 0 {
+        return vec![triangle];
+    }
+    let depth = depth - 1;
+
+    let a = triangle.a();
+    let b = triangle.b();
+    let c = triangle.c();
+
+    let ab_mid = slerp(&a, b, 0.5);
+    let bc_mid = slerp(&b, c, 0.5);
+    let ca_mid = slerp(&c, a, 0.5);
+
+    vec![
+        subdivide_triangle(Triangle::new(a, ab_mid, ca_mid), depth),
+        subdivide_triangle(Triangle::new(ab_mid, b, bc_mid), depth),
+        subdivide_triangle(Triangle::new(ca_mid, bc_mid, c), depth),
+        subdivide_triangle(Triangle::new(ab_mid, bc_mid, ca_mid), depth),
+    ].concat()
+}
+
 pub struct Planet {
     object: Arc<Object<[Vertex]>>,
 }
@@ -50,11 +86,11 @@ impl Planet {
     pub fn new(queue: Arc<Queue>, material: Arc<Material>) -> Result<Self, String>
     {
         let icosaherdon = generate_icosahedron();
-//        let icosahedron_sub = Planet::subdivide_icosahedron(&icosaherdon);
+        let icosahedron_sub = Planet::subdivide_icosahedron(&icosaherdon, 4);
 
         use cgmath::InnerSpace;
         let mut data: Vec<Vertex> = Vec::new();
-        for t in icosaherdon {
+        for t in icosahedron_sub {
             for v in t.iter() {
                 data.push(Vertex {
                     position: v.into(),
@@ -65,7 +101,7 @@ impl Planet {
             }
         }
 
-        Ok(Planet{
+        Ok(Planet {
             object: Object::from_iter(
                 queue,
                 material,
@@ -74,23 +110,21 @@ impl Planet {
         })
     }
 
-    pub fn object(self) -> Arc<Object<[Vertex]>>
+    pub fn object(self)
+                  -> Arc<Object<[Vertex]>>
     {
         self.object
     }
 
-//    fn generate_icosahedron() -> Polygon {
-//
-//        let mut icosahedron = Polygon::new();
-//
-//        for triangle in ICOSAHEDRON.into_iter() {
-//            icosahedron.add_triangle(triangle);
-//        }
-//
-//        icosahedron
-//    }
-//
-//    fn subdivide_icosahedron(icosahedron: &Polygon) {
-//
-//    }
+    fn subdivide_icosahedron(icosahedron: &Vec<Triangle>, depth: u16)
+                             -> Vec<Triangle>
+    {
+        let generated_triangles: Vec<Vec<Triangle>> = icosahedron.iter()
+            .map(|triangle| {
+                subdivide_triangle(Triangle::new(triangle.a(), triangle.b(), triangle.c()), depth)
+            })
+            .collect();
+
+        generated_triangles.concat()
+    }
 }

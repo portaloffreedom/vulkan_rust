@@ -1,5 +1,6 @@
 use cgmath::Vector3;
 
+#[derive(Clone)]
 pub struct Triangle([Vector3<f32>; 3]);
 
 impl Triangle {
