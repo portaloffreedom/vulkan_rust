@@ -6,6 +6,7 @@ dependencies = [
  "glfw 0.16.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "image 0.15.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "matrixstack 0.1.4 (git+https://github.com/portaloffreedom/matrixstack-rs.git)",
+ "rand 0.3.16 (registry+https://github.com/rust-lang/crates.io-index)",
  "vulkano 0.6.0",
 ]
 

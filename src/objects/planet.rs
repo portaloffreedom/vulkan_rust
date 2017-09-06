@@ -92,11 +92,20 @@ impl Planet {
         let mut data: Vec<Vertex> = Vec::new();
         for t in icosahedron_sub {
             for v in t.iter() {
+                use rand;
+                use rand::distributions::{IndependentSample, Range};
+                let between = Range::new(0.0_f32, 1.0_f32);
+                let mut rng = rand::thread_rng();
+
                 data.push(Vertex {
                     position: v.into(),
                     normal: v.normalize().into(),
                     texture_coordinate: [0.0, 0.0],
-                    color: v.into(),
+                    color: Vector3 {
+                        x: between.ind_sample(&mut rng),
+                        y: between.ind_sample(&mut rng),
+                        z: between.ind_sample(&mut rng),
+                    }.into(),
                 })
             }
         }

@@ -6,6 +6,7 @@ extern crate cgmath;
 extern crate vulkano;
 extern crate glfw;
 extern crate matrixstack;
+extern crate rand;
 //extern crate num;
 
 pub mod shaders;
