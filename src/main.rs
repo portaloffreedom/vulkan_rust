@@ -13,19 +13,19 @@ pub mod shaders;
 //pub mod utils;
 pub mod objects;
 pub mod app;
-
+pub mod camera;
+pub mod actors;
 
 
 fn main() {
     let app = app::App::new(800, 600).expect("Impossible to create Application");
     match app.run() {
-        Ok(_) => {},
+        Ok(_) => {}
         Err(error_message) => {
             println!("Unexpected error running program: {}\nExiting", error_message);
             std::process::exit(1);
-        },
+        }
     };
-
 }
 
 

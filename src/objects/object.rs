@@ -2,15 +2,9 @@ use std::sync::Arc;
 
 use vulkano::buffer::ImmutableBuffer;
 use vulkano::buffer::BufferUsage;
-use vulkano::command_buffer::CommandBufferExecFuture;
-use vulkano::command_buffer::AutoCommandBuffer;
-use vulkano::device::Device;
 use vulkano::device::Queue;
-use vulkano::memory::Content;
-use vulkano::sync::NowFuture;
 
 use shaders::Material;
-use shaders::Vertex;
 
 
 pub struct Object<T: ? Sized> {

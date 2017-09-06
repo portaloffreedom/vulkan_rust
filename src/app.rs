@@ -5,7 +5,7 @@ use std::sync::mpsc::Receiver;
 use std::time::Instant;
 
 use cgmath;
-use cgmath::{Matrix3, Matrix4};
+use cgmath::Matrix4;
 use matrixstack::MatrixStack;
 
 use glfw;
@@ -19,12 +19,11 @@ use shaders::Vertex;
 use shaders::Material;
 use objects::Object;
 use objects::Planet;
+use camera::Camera;
 
 use vulkano;
 use vulkano::buffer::BufferAccess;
-use vulkano::buffer::BufferUsage;
 use vulkano::buffer::CpuBufferPool;
-use vulkano::buffer::CpuAccessibleBuffer;
 use vulkano::command_buffer::AutoCommandBufferBuilder;
 use vulkano::command_buffer::AutoCommandBuffer;
 use vulkano::command_buffer::DynamicState;
@@ -95,7 +94,7 @@ impl ModelViewProj {
     pub fn uniform_data(&self)
                         -> ModelViewProj_uniform
     {
-        use cgmath::{Transform, Matrix, SquareMatrix};
+        use cgmath::{Transform, SquareMatrix};
 
         let mut normal_matrix4: Matrix4<f32> = self.modelview.get_matrix().clone();
         normal_matrix4 = normal_matrix4.inverse_transform().unwrap();
@@ -210,6 +209,7 @@ pub struct App {
     vk_instance: Arc<Instance>,
     vk_debug_callback: Option<DebugCallback>,
     vk_surface: Arc<Surface>,
+    //vk_physical_device: PhysicalDevice,
     vk_device: Arc<Device>,
     vk_graphic_queue: Arc<Queue>,
     vk_swapchain: Arc<Swapchain>,
@@ -219,7 +219,7 @@ pub struct App {
     framebuffers: Vec<Arc<Framebuffer<Arc<RenderPassAbstract + Send + Sync>, ((), Arc<SwapchainImage>)>>>,
     model_view_proj: Arc<ModelViewProj>,
     material: Arc<Material>,
-    //vk_physical_device: PhysicalDevice,
+    camera: Camera,
 }
 
 
@@ -242,6 +242,7 @@ impl App {
             vk_instance: instance,
             vk_debug_callback: debug_callback,
             vk_surface: surface,
+            //vk_physical_device: physical_device,
             vk_device: device,
             vk_graphic_queue: graphic_queue,
             vk_swapchain: swapchain,
@@ -251,7 +252,7 @@ impl App {
             framebuffers: framebuffers,
             model_view_proj: model_view_proj,
             material: material,
-            //vk_physical_device: physical_device,
+            camera: Camera::new(),
         })
     }
 
@@ -728,9 +729,10 @@ impl App {
 
         while !should_close {
             self.glfw.poll_events();
-            should_close = self.window.should_close();
-            let space_bar_pressed = self.handle_inputs();
+            should_close = self.window.should_close() || self.handle_inputs();
 
+            Arc::get_mut(&mut self.model_view_proj).unwrap().save();
+            Arc::get_mut(&mut self.model_view_proj).unwrap().transform(self.camera.get_matrix());
             Arc::get_mut(&mut self.model_view_proj).unwrap().save();
             let now = Instant::now();
             self.update_model_view_proj(&start_timer);
@@ -742,29 +744,54 @@ impl App {
             //println!("draw frame - ms:\t{}", ms);
 
             Arc::get_mut(&mut self.model_view_proj).unwrap().restore();
+            Arc::get_mut(&mut self.model_view_proj).unwrap().restore();
         }
 
         Ok(())
     }
 
-    fn handle_inputs(&self)
+    fn handle_inputs(&mut self)
                      -> bool
     {
-        let mut space_bar_pressed = false;
+        const LINEAR: f32 = 0.1_f32;
+        const ANGULAR: f32 = 0.5_f32;
+
+        let mut escape_pressed = false;
 
         for (_, event) in glfw::flush_messages(&self.glfw_events) {
             println!("{:?}", event);
             use glfw::{Action, Key};
             match event {
+                glfw::WindowEvent::Key(Key::Escape, _, Action::Press, _) => {
+                    escape_pressed = true;
+                }
                 glfw::WindowEvent::Key(Key::Space, _, Action::Press, _) => {
                     //window.set_should_close(true)
-                    space_bar_pressed = true;
+                    println!("Hey! you pressed spacebar! How nice of you :)")
+                }
+                glfw::WindowEvent::Key(Key::Up, _, Action::Press, _) => {
+                    self.camera.move_forward(LINEAR);
+                }
+                glfw::WindowEvent::Key(Key::Down, _, Action::Press, _) => {
+                    self.camera.move_forward(-LINEAR);
+                }
+                glfw::WindowEvent::Key(Key::PageUp, _, Action::Press, _) => {
+                    self.camera.move_up(LINEAR);
+                }
+                glfw::WindowEvent::Key(Key::PageDown, _, Action::Press, _) => {
+                    self.camera.move_up(-LINEAR);
+                }
+                glfw::WindowEvent::Key(Key::Right, _, Action::Press, _) => {
+                    self.camera.move_right(LINEAR);
+                }
+                glfw::WindowEvent::Key(Key::Left, _, Action::Press, _) => {
+                    self.camera.move_right(-LINEAR);
                 }
                 _ => {}
             }
         }
 
-        space_bar_pressed
+        escape_pressed
     }
 
     fn update_model_view_proj(&mut self, start_timer: &Instant)
