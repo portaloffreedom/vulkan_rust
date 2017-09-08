@@ -54,7 +54,7 @@ use vulkano::sync::GpuFuture;
 static ENABLE_VALIDATION_LAYERS: bool = false;
 
 #[derive(Clone)]
-struct ModelViewProj_uniform {
+struct ModelViewProjUniform {
     modelview: [[f32; 4]; 4],
     //Matrix4<f32>,
     modelviewproj: [[f32; 4]; 4],
@@ -66,7 +66,7 @@ struct ModelViewProj_uniform {
 struct ModelViewProj {
     modelview: MatrixStack<f32>,
     proj: Matrix4<f32>,
-    uniform_buffer: Arc<CpuBufferPool<ModelViewProj_uniform>>,
+    uniform_buffer: Arc<CpuBufferPool<ModelViewProjUniform>>,
 }
 
 impl ModelViewProj {
@@ -74,7 +74,7 @@ impl ModelViewProj {
                model: Matrix4<f32>, view: Matrix4<f32>, proj: Matrix4<f32>)
                -> Result<Arc<Self>, String>
     {
-        let uniform_buffer = vulkano::buffer::CpuBufferPool::<ModelViewProj_uniform>::new(device, vulkano::buffer::BufferUsage {
+        let uniform_buffer = vulkano::buffer::CpuBufferPool::<ModelViewProjUniform>::new(device, vulkano::buffer::BufferUsage {
             uniform_buffer: true,
             ..vulkano::buffer::BufferUsage::none()
         });
@@ -92,7 +92,7 @@ impl ModelViewProj {
     }
 
     pub fn uniform_data(&self)
-                        -> ModelViewProj_uniform
+                        -> ModelViewProjUniform
     {
         use cgmath::{Transform, SquareMatrix};
 
@@ -117,7 +117,7 @@ impl ModelViewProj {
         //);
 
         let modelview = self.modelview.get_matrix();
-        ModelViewProj_uniform {
+        ModelViewProjUniform {
             modelview: modelview.into(),
             modelviewproj: (self.proj * modelview).into(),
             normal_matrix: normal_matrix4.into(),

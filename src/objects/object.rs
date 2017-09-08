@@ -18,7 +18,7 @@ impl<T> Object<[T]> {
         where D: ExactSizeIterator<Item = T>,
               T: 'static + Send + Sync + Sized
     {
-        let (vertex_buffer, future) = ImmutableBuffer::from_iter(
+        let (vertex_buffer, _future) = ImmutableBuffer::from_iter(
             data,
             BufferUsage {
                 vertex_buffer: true,
